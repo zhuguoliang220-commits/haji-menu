@@ -29,7 +29,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -94,12 +95,28 @@ button {
   }
 
   .text-input,
-  .note-input {
+  .note-input,
+  .select-input {
     @apply w-full rounded-2xl border border-white/80 bg-white/70 px-4 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-100;
   }
 
-  .text-input {
+  .text-input,
+  .select-input {
     @apply h-12;
+  }
+
+  .select-input {
+    @apply cursor-pointer appearance-none pr-9 font-bold;
+    background-image:
+      linear-gradient(45deg, transparent 50%, #0891b2 50%),
+      linear-gradient(135deg, #0891b2 50%, transparent 50%);
+    background-position:
+      calc(100% - 18px) 52%,
+      calc(100% - 13px) 52%;
+    background-size:
+      5px 5px,
+      5px 5px;
+    background-repeat: no-repeat;
   }
 
   .note-input {
@@ -120,7 +137,8 @@ button {
 
   .mini-badge,
   .alarm-badge,
-  .status-chip {
+  .status-chip,
+  .reject-chip {
     @apply inline-flex items-center justify-center gap-1 rounded-full px-3 py-1 text-xs font-black;
   }
 
@@ -137,8 +155,13 @@ button {
     @apply shrink-0 bg-cyan-100 text-cyan-700;
   }
 
+  .reject-chip {
+    @apply shrink-0 bg-rose-100 text-rose-600;
+  }
+
   .status-button,
-  .status-button-active {
+  .status-button-active,
+  .reject-button {
     @apply inline-flex min-h-10 items-center justify-center gap-1 rounded-2xl px-2 text-xs font-black transition;
   }
 
@@ -148,6 +171,10 @@ button {
 
   .status-button-active {
     @apply bg-slate-950 text-white shadow-glow;
+  }
+
+  .reject-button {
+    @apply bg-rose-500 text-white shadow-[0_12px_28px_rgba(244,63,94,0.22)];
   }
 
   .dish-card {
@@ -169,6 +196,32 @@ button {
 
   .toggle-off {
     @apply bg-slate-200 text-slate-500;
+  }
+
+  .danger-button {
+    @apply inline-flex min-h-10 items-center justify-center gap-1 rounded-2xl bg-rose-500 px-3 py-2 text-xs font-black text-white transition disabled:cursor-not-allowed disabled:bg-slate-300;
+  }
+
+  .danger-icon-button {
+    @apply inline-grid h-10 w-10 shrink-0 place-items-center rounded-full border border-rose-100 bg-rose-50 text-rose-500 transition hover:bg-rose-100;
+  }
+
+  .star-button,
+  .star-button-on {
+    @apply inline-grid h-9 w-9 place-items-center rounded-full border transition disabled:cursor-default;
+  }
+
+  .star-button {
+    @apply border-white/80 bg-white/65 text-slate-300;
+  }
+
+  .star-button-on {
+    @apply border-amber-200 bg-amber-100 text-amber-500;
+  }
+
+  .category-dot {
+    @apply inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-pink-400;
+    box-shadow: 0 0 14px rgba(236, 72, 153, 0.7);
   }
 
   .status-pill,
@@ -196,118 +249,41 @@ button {
   }
 }
 
-.mascot {
-  position: relative;
-  width: 132px;
-  height: 112px;
-  border: 3px solid rgba(15, 23, 42, 0.82);
-  border-radius: 48% 48% 42% 42%;
-  background:
-    radial-gradient(circle at 31% 57%, #ffb7d6 0 8px, transparent 9px),
-    radial-gradient(circle at 69% 57%, #ffb7d6 0 8px, transparent 9px),
-    linear-gradient(145deg, #fff 0%, #fff8fb 56%, #e8fbff 100%);
+.avatar {
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: #fff;
   box-shadow:
-    0 20px 45px rgba(236, 72, 153, 0.18),
-    0 0 32px rgba(34, 211, 238, 0.25);
+    0 18px 38px rgba(236, 72, 153, 0.18),
+    0 0 32px rgba(34, 211, 238, 0.22);
   animation: floaty 4.5s ease-in-out infinite;
 }
 
-.mascot-compact {
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.avatar-lg {
+  width: 104px;
+  height: 104px;
+}
+
+.avatar-md {
   width: 78px;
-  height: 68px;
+  height: 78px;
+  animation-duration: 5.2s;
+}
+
+.avatar-sm {
+  width: 54px;
+  height: 54px;
   border-width: 2px;
-  animation-duration: 5.4s;
-}
-
-.mascot-ear {
-  position: absolute;
-  top: -15px;
-  width: 35px;
-  height: 35px;
-  border: 3px solid rgba(15, 23, 42, 0.82);
-  border-radius: 50% 50% 42% 42%;
-  background: #fff;
-}
-
-.mascot-compact .mascot-ear {
-  top: -10px;
-  width: 22px;
-  height: 22px;
-  border-width: 2px;
-}
-
-.mascot-ear.left {
-  left: 18px;
-}
-
-.mascot-ear.right {
-  right: 18px;
-}
-
-.mascot-eye {
-  position: absolute;
-  top: 42px;
-  width: 9px;
-  height: 13px;
-  border-radius: 99px;
-  background: #0f172a;
-}
-
-.mascot-compact .mascot-eye {
-  top: 27px;
-  width: 6px;
-  height: 9px;
-}
-
-.mascot-eye.left {
-  left: 42px;
-}
-
-.mascot-eye.right {
-  right: 42px;
-}
-
-.mascot-compact .mascot-eye.left {
-  left: 25px;
-}
-
-.mascot-compact .mascot-eye.right {
-  right: 25px;
-}
-
-.mascot-mouth {
-  position: absolute;
-  left: 50%;
-  top: 59px;
-  width: 18px;
-  height: 9px;
-  border-bottom: 3px solid #0f172a;
-  border-radius: 0 0 99px 99px;
-  transform: translateX(-50%);
-}
-
-.mascot-compact .mascot-mouth {
-  top: 38px;
-  width: 12px;
-  height: 7px;
-  border-bottom-width: 2px;
-}
-
-.mascot-label {
-  position: absolute;
-  left: 50%;
-  bottom: 13px;
-  max-width: 78%;
-  transform: translateX(-50%);
-  color: #0891b2;
-  font-size: 12px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.mascot-compact .mascot-label {
-  bottom: 7px;
-  font-size: 10px;
+  animation-duration: 5.6s;
 }
 
 .scanner-line {

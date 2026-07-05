@@ -7,11 +7,19 @@ export async function GET(request: Request) {
   if (!isAuthorized(request)) return unauthorized();
 
   try {
+    const url = new URL(request.url);
+    const mealDate = url.searchParams.get("meal_date");
+    const mealPeriod = url.searchParams.get("meal_period");
     const supabase = getSupabaseAdmin();
-    const { data, error } = await supabase
+    let query = supabase
       .from("orders")
       .select("*")
       .order("created_at", { ascending: false });
+
+    if (mealDate) query = query.eq("meal_date", mealDate);
+    if (mealPeriod) query = query.eq("meal_period", mealPeriod);
+
+    const { data, error } = await query;
 
     if (error) throw error;
     return Response.json({ orders: data ?? [] });
@@ -27,7 +35,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as NewOrder;
 
-    if (!body.customer_name || !body.dish_id || !body.dish_name || !body.quantity) {
+    if (!body.customer_name || !body.dish_id || !body.dish_name || !body.quantity || !body.meal_date || !body.meal_period) {
       return Response.json({ error: "订单信息不完整" }, { status: 400 });
     }
 
@@ -41,7 +49,9 @@ export async function POST(request: Request) {
         dish_image_url: body.dish_image_url,
         quantity: Math.max(1, Number(body.quantity)),
         note: body.note?.trim() || null,
-        status: "收到"
+        status: "未完成",
+        meal_date: body.meal_date,
+        meal_period: body.meal_period
       })
       .select("*")
       .single();
@@ -51,5 +61,25 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof Error && error.message.includes("Missing SUPABASE")) return missingSupabase();
     return Response.json({ error: "提交订单失败" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  if (!isAuthorized(request)) return unauthorized();
+
+  try {
+    const url = new URL(request.url);
+    const customer = url.searchParams.get("customer");
+    const supabase = getSupabaseAdmin();
+    let query = supabase.from("orders").delete().in("status", ["已完成", "已拒绝"]);
+
+    if (customer) query = query.eq("customer_name", customer);
+
+    const { error } = await query;
+    if (error) throw error;
+    return Response.json({ ok: true });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Missing SUPABASE")) return missingSupabase();
+    return Response.json({ error: "清除历史失败" }, { status: 500 });
   }
 }
