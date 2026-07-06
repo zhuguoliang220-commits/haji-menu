@@ -8,6 +8,7 @@ import {
   ChefHat,
   ClipboardList,
   Cloud,
+  Edit3,
   Heart,
   Loader2,
   LogOut,
@@ -15,16 +16,20 @@ import {
   Plus,
   Power,
   RefreshCw,
+  Save,
   Send,
   Sparkles,
   Star,
   Store,
   Trash2,
+  X,
   XCircle
 } from "lucide-react";
 import {
   Dish,
+  DishAvailability,
   DishCategory,
+  MEAL_PERIODS,
   MealPeriod,
   NewOrder,
   Order,
@@ -41,11 +46,25 @@ type CartItem = {
   note: string;
 };
 
+type MealChoice = {
+  date: string;
+  period: MealPeriod;
+};
+
+type EditDishState = {
+  dish: Dish;
+  name: string;
+  categoryText: string;
+  file: File | null;
+  preview: string;
+};
+
 const sessionKey = "haji-menu-session";
 const accessKey = "haji-menu-access";
 const localDishesKey = "haji-menu-local-dishes";
 const localOrdersKey = "haji-menu-local-orders";
 const localCategoriesKey = "haji-menu-local-categories";
+const localAvailabilityKey = "haji-menu-local-availability";
 const configuredAccessCode = process.env.NEXT_PUBLIC_APP_ACCESS_CODE || "haji-love";
 
 const avatarByPerson: Record<PersonName, string> = {
@@ -59,6 +78,10 @@ function nowIso() {
 
 function localId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function otherPerson(person: PersonName): PersonName {
+  return person === "哈基工" ? "哈吉梁" : "哈基工";
 }
 
 function formatDate(date = new Date()) {
@@ -76,12 +99,8 @@ function getMealPeriod(date = new Date()): MealPeriod {
   return "夜宵";
 }
 
-function getMealContext() {
-  const now = new Date();
-  return {
-    date: formatDate(now),
-    period: getMealPeriod(now)
-  };
+function getDefaultMealChoice(): MealChoice {
+  return { date: formatDate(), period: getMealPeriod() };
 }
 
 function formatTime(value: string | null | undefined) {
@@ -95,6 +114,51 @@ function formatTime(value: string | null | undefined) {
     minute: "2-digit",
     hour12: false
   });
+}
+
+function categoryLabel(category: DishCategory) {
+  return category.path?.length ? category.path.join(" / ") : category.name;
+}
+
+function parseCategoryText(value: string) {
+  return value
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) =>
+      item
+        .split("/")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .slice(0, 3)
+    )
+    .filter((path) => path.length > 0);
+}
+
+function categoriesToText(categories: DishCategory[]) {
+  return categories.map(categoryLabel).join("，");
+}
+
+function pathKey(path: string[]) {
+  return path.join("||");
+}
+
+function keyToPath(key: string) {
+  return key === "all" ? [] : key.split("||").filter(Boolean);
+}
+
+function categoryMatchesPath(category: DishCategory, key: string) {
+  const picked = keyToPath(key);
+  if (picked.length === 0) return true;
+  return picked.every((part, index) => category.path[index] === part);
+}
+
+function dishMatchesPath(dish: Dish, key: string) {
+  return key === "all" || dish.categories.some((category) => categoryMatchesPath(category, key));
+}
+
+function unique(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function readLocal<T>(key: string, fallback: T): T {
@@ -113,41 +177,26 @@ function writeLocal<T>(key: string, value: T) {
   window.dispatchEvent(new Event("haji-local-sync"));
 }
 
-function normalizeCategories(categories: DishCategory[], dishes: Dish[]) {
-  const next = [...categories];
-  for (const person of PEOPLE) {
-    const hasDefault = next.some((category) => category.created_by === person && category.name === "未分类");
-    const hasLegacyDish = dishes.some((dish) => dish.created_by === person && !dish.category_id);
-    if (!hasDefault || hasLegacyDish) {
-      next.push({
-        id: `local-default-${person}`,
-        name: "未分类",
-        created_by: person,
-        created_at: nowIso()
-      });
-    }
-  }
-  return dedupeCategories(next);
-}
-
-function dedupeCategories(categories: DishCategory[]) {
-  const seen = new Set<string>();
-  return categories.filter((category) => {
-    const key = `${category.created_by}-${category.name}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+function normalizeCategory(category: Partial<DishCategory> & { id: string; name: string; created_by: PersonName; created_at: string }): DishCategory {
+  return {
+    id: category.id,
+    name: category.name,
+    path: category.path?.length ? category.path : [category.name],
+    created_by: category.created_by,
+    created_at: category.created_at
+  };
 }
 
 function normalizeDish(dish: Partial<Dish> & { id: string; name: string; image_url: string; created_by: PersonName; created_at: string }): Dish {
+  const categories = (dish.categories ?? []).map(normalizeCategory);
   return {
     id: dish.id,
     name: dish.name,
     image_url: dish.image_url,
     created_by: dish.created_by,
-    category_id: dish.category_id ?? null,
-    category_name: dish.category_name ?? null,
+    category_id: categories[0]?.id ?? dish.category_id ?? null,
+    category_name: categories[0]?.name ?? dish.category_name ?? null,
+    categories,
     is_active: dish.is_active ?? true,
     created_at: dish.created_at,
     deleted_at: dish.deleted_at ?? null
@@ -176,6 +225,7 @@ function normalizeOrder(order: Partial<Order> & { id: string; customer_name: Per
     status,
     meal_date: order.meal_date ?? formatDate(validCreated),
     meal_period: order.meal_period ?? getMealPeriod(validCreated),
+    chef_name: order.chef_name ?? null,
     completed_at: order.completed_at ?? null,
     rejected_at: order.rejected_at ?? null,
     rating: order.rating ?? null,
@@ -183,6 +233,53 @@ function normalizeOrder(order: Partial<Order> & { id: string; customer_name: Per
     created_at: order.created_at,
     updated_at: order.updated_at ?? order.created_at
   };
+}
+
+function normalizeAvailability(item: Partial<DishAvailability> & { id: string; chef_name: PersonName; dish_id: string; meal_date: string; meal_period: MealPeriod; created_at: string }): DishAvailability {
+  return {
+    id: item.id,
+    chef_name: item.chef_name,
+    dish_id: item.dish_id,
+    meal_date: item.meal_date,
+    meal_period: item.meal_period,
+    created_at: item.created_at
+  };
+}
+
+function ensureLocalCategories(paths: string[][], owner: PersonName, categories: DishCategory[]) {
+  const next = [...categories];
+  const ids: string[] = [];
+  const wanted = paths.length > 0 ? paths : [["未分类"]];
+
+  for (const path of wanted) {
+    const cleanPath = path.map((part) => part.trim()).filter(Boolean).slice(0, 3);
+    if (cleanPath.length === 0) continue;
+    const name = cleanPath.join(" / ");
+    let category = next.find((item) => item.created_by === owner && item.name === name);
+    if (!category) {
+      category = {
+        id: localId("category"),
+        name,
+        path: cleanPath,
+        created_by: owner,
+        created_at: nowIso()
+      };
+      next.unshift(category);
+    }
+    ids.push(category.id);
+  }
+
+  return { categories: dedupeCategories(next), ids };
+}
+
+function dedupeCategories(categories: DishCategory[]) {
+  const seen = new Set<string>();
+  return categories.filter((category) => {
+    const key = `${category.created_by}-${category.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function apiFetch<T>(path: string, accessCode: string, init?: RequestInit): Promise<T> {
@@ -204,46 +301,84 @@ export default function Home() {
   const [session, setSession] = useState<SessionChoice | null>(null);
   const [categories, setCategories] = useState<DishCategory[]>([]);
   const [dishes, setDishes] = useState<Dish[]>([]);
+  const [availability, setAvailability] = useState<DishAvailability[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [dishName, setDishName] = useState("");
-  const [categoryName, setCategoryName] = useState("");
-  const [selectedCategoryId, setSelectedCategoryId] = useState("");
+  const [categoryText, setCategoryText] = useState("");
   const [dishFile, setDishFile] = useState<File | null>(null);
   const [dishPreview, setDishPreview] = useState("");
+  const [editDish, setEditDish] = useState<EditDishState | null>(null);
   const [isSavingDish, setIsSavingDish] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [notice, setNotice] = useState("欢迎进入点菜舱");
   const [backendMode, setBackendMode] = useState<BackendMode>("supabase");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [mealContext, setMealContext] = useState(getMealContext);
-  const [customerCategory, setCustomerCategory] = useState("all");
+  const [mealChoice, setMealChoice] = useState<MealChoice>(getDefaultMealChoice);
+  const [activePath, setActivePath] = useState("all");
 
   const isChef = session?.role === "chef";
+  const selectedChef = session ? (isChef ? session.person : otherPerson(session.person)) : null;
 
   const visibleDishes = useMemo(() => dishes.filter((dish) => !dish.deleted_at), [dishes]);
-  const activeDishes = useMemo(() => visibleDishes.filter((dish) => dish.is_active), [visibleDishes]);
-  const inactiveDishes = useMemo(() => visibleDishes.filter((dish) => !dish.is_active), [visibleDishes]);
+  const chefDishes = useMemo(
+    () => visibleDishes.filter((dish) => dish.created_by === session?.person),
+    [session?.person, visibleDishes]
+  );
+  const activeChefDishes = useMemo(() => chefDishes.filter((dish) => dish.is_active), [chefDishes]);
+  const inactiveChefDishes = useMemo(() => chefDishes.filter((dish) => !dish.is_active), [chefDishes]);
+  const selectedAvailability = useMemo(
+    () =>
+      availability.filter(
+        (item) =>
+          item.chef_name === selectedChef &&
+          item.meal_date === mealChoice.date &&
+          item.meal_period === mealChoice.period
+      ),
+    [availability, mealChoice.date, mealChoice.period, selectedChef]
+  );
+  const selectedSupplyIds = useMemo(
+    () => new Set(selectedAvailability.map((item) => item.dish_id)),
+    [selectedAvailability]
+  );
+  const customerMenuDishes = useMemo(
+    () =>
+      visibleDishes.filter(
+        (dish) =>
+          dish.created_by === selectedChef &&
+          dish.is_active &&
+          selectedSupplyIds.has(dish.id)
+      ),
+    [selectedChef, selectedSupplyIds, visibleDishes]
+  );
+  const filteredCustomerDishes = useMemo(
+    () =>
+      customerMenuDishes.filter(
+        (dish) => dishMatchesPath(dish, activePath)
+      ),
+    [activePath, customerMenuDishes]
+  );
+  const customerTags = useMemo(() => collectTags(customerMenuDishes), [customerMenuDishes]);
+  const chefTags = useMemo(() => collectTags(chefDishes), [chefDishes]);
   const currentOrders = useMemo(
-    () => orders.filter((order) => order.meal_date === mealContext.date && order.meal_period === mealContext.period),
-    [mealContext.date, mealContext.period, orders]
+    () =>
+      orders.filter(
+        (order) =>
+          order.meal_date === mealChoice.date &&
+          order.meal_period === mealChoice.period &&
+          (isChef ? order.chef_name === session?.person : order.customer_name === session?.person)
+      ),
+    [isChef, mealChoice.date, mealChoice.period, orders, session?.person]
   );
   const unfinishedOrders = useMemo(() => currentOrders.filter((order) => order.status === "未完成"), [currentOrders]);
   const finishedOrders = useMemo(
-    () => orders.filter((order) => order.status === "已完成" || order.status === "已拒绝"),
-    [orders]
-  );
-  const myCurrentOrders = useMemo(
-    () => currentOrders.filter((order) => order.customer_name === session?.person),
-    [currentOrders, session?.person]
-  );
-  const myFinishedOrders = useMemo(
-    () => finishedOrders.filter((order) => order.customer_name === session?.person),
-    [finishedOrders, session?.person]
-  );
-  const myCategories = useMemo(
-    () => categories.filter((category) => category.created_by === session?.person),
-    [categories, session?.person]
+    () =>
+      orders.filter((order) => {
+        const done = order.status === "已完成" || order.status === "已拒绝";
+        if (!done) return false;
+        return isChef ? order.chef_name === session?.person : order.customer_name === session?.person;
+      }),
+    [isChef, orders, session?.person]
   );
 
   const loadData = useCallback(
@@ -251,23 +386,24 @@ export default function Home() {
       if (!code) return;
       setIsRefreshing(true);
       try {
-        const [categoryResult, dishResult, orderResult] = await Promise.all([
+        const [categoryResult, dishResult, orderResult, availabilityResult] = await Promise.all([
           apiFetch<{ categories: DishCategory[] }>("/api/categories", code),
           apiFetch<{ dishes: Dish[] }>("/api/dishes", code),
-          apiFetch<{ orders: Order[] }>("/api/orders", code)
+          apiFetch<{ orders: Order[] }>("/api/orders", code),
+          apiFetch<{ availability: DishAvailability[] }>("/api/availability", code)
         ]);
-        const nextDishes = dishResult.dishes.map(normalizeDish);
-        setDishes(nextDishes);
-        setCategories(normalizeCategories(categoryResult.categories, nextDishes));
+        setCategories(categoryResult.categories.map(normalizeCategory));
+        setDishes(dishResult.dishes.map(normalizeDish));
         setOrders(orderResult.orders.map(normalizeOrder));
+        setAvailability(availabilityResult.availability.map(normalizeAvailability));
         setBackendMode("supabase");
       } catch {
-        const localDishes = readLocal<Dish[]>(localDishesKey, []).map(normalizeDish);
-        const localCategories = normalizeCategories(readLocal<DishCategory[]>(localCategoriesKey, []), localDishes);
+        const localCategories = readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory);
         setBackendMode("local");
-        setDishes(localDishes);
         setCategories(localCategories);
+        setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
         setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
+        setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
       } finally {
         setIsRefreshing(false);
       }
@@ -287,19 +423,14 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setMealContext(getMealContext()), 60000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     if (!accessGranted || !accessCode) return;
     const interval = window.setInterval(() => void loadData(accessCode), 5000);
     const syncLocal = () => {
       if (backendMode === "local") {
-        const localDishes = readLocal<Dish[]>(localDishesKey, []).map(normalizeDish);
-        setDishes(localDishes);
-        setCategories(normalizeCategories(readLocal<DishCategory[]>(localCategoriesKey, []), localDishes));
+        setCategories(readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory));
+        setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
         setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
+        setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
       }
     };
     window.addEventListener("haji-local-sync", syncLocal);
@@ -319,6 +450,13 @@ export default function Home() {
     return () => URL.revokeObjectURL(url);
   }, [dishFile]);
 
+  useEffect(() => {
+    if (!editDish?.file) return;
+    const url = URL.createObjectURL(editDish.file);
+    setEditDish((current) => (current ? { ...current, preview: url } : current));
+    return () => URL.revokeObjectURL(url);
+  }, [editDish?.file]);
+
   function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (accessCode.trim() !== configuredAccessCode) {
@@ -334,6 +472,8 @@ export default function Home() {
   function chooseSession(choice: SessionChoice) {
     setSession(choice);
     writeLocal(sessionKey, choice);
+    setCart([]);
+    setActivePath("all");
     setNotice(`${choice.person} 已进入${choice.role === "chef" ? "厨师台" : "点餐台"}`);
   }
 
@@ -341,6 +481,7 @@ export default function Home() {
     window.localStorage.removeItem(sessionKey);
     setSession(null);
     setCart([]);
+    setEditDish(null);
     setNotice("已退回身份选择");
   }
 
@@ -359,22 +500,6 @@ export default function Home() {
     return result.url;
   }
 
-  function ensureLocalCategory(name: string, owner: PersonName) {
-    const trimmed = name.trim() || "未分类";
-    const existing = categories.find((category) => category.created_by === owner && category.name === trimmed);
-    if (existing) return existing;
-    const nextCategory: DishCategory = {
-      id: localId("category"),
-      name: trimmed,
-      created_by: owner,
-      created_at: nowIso()
-    };
-    const nextCategories = dedupeCategories([nextCategory, ...categories]);
-    setCategories(nextCategories);
-    writeLocal(localCategoriesKey, nextCategories);
-    return nextCategory;
-  }
-
   async function saveDish(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session || !dishName.trim() || !dishFile) {
@@ -385,24 +510,27 @@ export default function Home() {
     setIsSavingDish(true);
     try {
       const imageUrl = await uploadImage(dishFile);
-      const pickedCategory = myCategories.find((category) => category.id === selectedCategoryId);
-      const nextCategoryName = categoryName.trim() || pickedCategory?.name || "未分类";
+      const categoryPaths = parseCategoryText(categoryText);
 
       if (backendMode === "local") {
-        const category = ensureLocalCategory(nextCategoryName, session.person);
+        const ensured = ensureLocalCategories(categoryPaths, session.person, categories);
+        const dishCategories = ensured.categories.filter((category) => ensured.ids.includes(category.id));
         const nextDish: Dish = {
           id: localId("dish"),
           name: dishName.trim(),
           image_url: imageUrl,
           created_by: session.person,
-          category_id: category.id,
-          category_name: category.name,
+          category_id: dishCategories[0]?.id ?? null,
+          category_name: dishCategories[0]?.name ?? null,
+          categories: dishCategories,
           is_active: true,
           created_at: nowIso(),
           deleted_at: null
         };
         const nextDishes = [nextDish, ...dishes];
+        setCategories(ensured.categories);
         setDishes(nextDishes);
+        writeLocal(localCategoriesKey, ensured.categories);
         writeLocal(localDishesKey, nextDishes);
       } else {
         await apiFetch<{ dish: Dish }>("/api/dishes", accessCode, {
@@ -411,43 +539,93 @@ export default function Home() {
             name: dishName,
             image_url: imageUrl,
             created_by: session.person,
-            category_id: selectedCategoryId || null,
-            category_name: categoryName.trim() || undefined
+            category_paths: categoryPaths
           })
         });
         await loadData();
       }
 
       setDishName("");
-      setCategoryName("");
-      setSelectedCategoryId("");
+      setCategoryText("");
       setDishFile(null);
-      setNotice("新菜已上架到对应菜系");
+      setNotice("新菜已加入历史菜品库，可选择餐次供应");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "上架失败");
+      setNotice(error instanceof Error ? error.message : "保存菜品失败");
     } finally {
       setIsSavingDish(false);
     }
   }
 
-  async function toggleDish(dish: Dish) {
-    const nextActive = !dish.is_active;
+  async function saveEditDish(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !editDish) return;
+
+    setIsSavingDish(true);
+    try {
+      const imageUrl = editDish.file ? await uploadImage(editDish.file) : editDish.dish.image_url;
+      const categoryPaths = parseCategoryText(editDish.categoryText);
+
+      if (backendMode === "local") {
+        const ensured = ensureLocalCategories(categoryPaths, session.person, categories);
+        const dishCategories = ensured.categories.filter((category) => ensured.ids.includes(category.id));
+        const nextDishes = dishes.map((dish) =>
+          dish.id === editDish.dish.id
+            ? {
+                ...dish,
+                name: editDish.name.trim(),
+                image_url: imageUrl,
+                category_id: dishCategories[0]?.id ?? null,
+                category_name: dishCategories[0]?.name ?? null,
+                categories: dishCategories
+              }
+            : dish
+        );
+        setCategories(ensured.categories);
+        setDishes(nextDishes);
+        writeLocal(localCategoriesKey, ensured.categories);
+        writeLocal(localDishesKey, nextDishes);
+      } else {
+        await apiFetch<{ dish: Dish }>(`/api/dishes/${editDish.dish.id}`, accessCode, {
+          method: "PATCH",
+          body: JSON.stringify({
+            created_by: session.person,
+            name: editDish.name,
+            image_url: imageUrl,
+            category_paths: categoryPaths
+          })
+        });
+        await loadData();
+      }
+
+      setEditDish(null);
+      setNotice("菜品信息已更新");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "编辑菜品失败");
+    } finally {
+      setIsSavingDish(false);
+    }
+  }
+
+  async function toggleDishActive(dish: Dish) {
     if (backendMode === "local") {
-      const nextDishes = dishes.map((item) => (item.id === dish.id ? { ...item, is_active: nextActive } : item));
+      const nextDishes = dishes.map((item) => (item.id === dish.id ? { ...item, is_active: !dish.is_active } : item));
+      const nextAvailability = dish.is_active ? availability.filter((item) => item.dish_id !== dish.id) : availability;
       setDishes(nextDishes);
+      setAvailability(nextAvailability);
       writeLocal(localDishesKey, nextDishes);
+      writeLocal(localAvailabilityKey, nextAvailability);
       return;
     }
     await apiFetch<{ dish: Dish }>(`/api/dishes/${dish.id}`, accessCode, {
       method: "PATCH",
-      body: JSON.stringify({ is_active: nextActive })
+      body: JSON.stringify({ created_by: session?.person, is_active: !dish.is_active })
     });
     await loadData();
   }
 
   async function deleteDish(dish: Dish) {
     if (dish.is_active) {
-      setNotice("请先下架，再删除菜品");
+      setNotice("请先停用菜品，再删除");
       return;
     }
     if (backendMode === "local") {
@@ -458,20 +636,63 @@ export default function Home() {
     }
     await apiFetch<{ dish: Dish }>(`/api/dishes/${dish.id}`, accessCode, {
       method: "PATCH",
-      body: JSON.stringify({ deleted: true })
+      body: JSON.stringify({ created_by: session?.person, deleted: true })
     });
     await loadData();
+  }
+
+  async function toggleSupply(dish: Dish) {
+    if (!session) return;
+    const isSelected = selectedSupplyIds.has(dish.id);
+    const nextIds = isSelected
+      ? Array.from(selectedSupplyIds).filter((id) => id !== dish.id)
+      : [...Array.from(selectedSupplyIds), dish.id];
+
+    if (backendMode === "local") {
+      const nextAvailability = [
+        ...availability.filter(
+          (item) =>
+            !(
+              item.chef_name === session.person &&
+              item.meal_date === mealChoice.date &&
+              item.meal_period === mealChoice.period
+            )
+        ),
+        ...nextIds.map((dishId) => ({
+          id: localId("availability"),
+          chef_name: session.person,
+          dish_id: dishId,
+          meal_date: mealChoice.date,
+          meal_period: mealChoice.period,
+          created_at: nowIso()
+        }))
+      ];
+      setAvailability(nextAvailability);
+      writeLocal(localAvailabilityKey, nextAvailability);
+      setNotice(`${mealChoice.period}供应菜单已更新`);
+      return;
+    }
+
+    await apiFetch<{ availability: DishAvailability[] }>("/api/availability", accessCode, {
+      method: "PUT",
+      body: JSON.stringify({
+        chef_name: session.person,
+        meal_date: mealChoice.date,
+        meal_period: mealChoice.period,
+        dish_ids: nextIds
+      })
+    });
+    await loadData();
+    setNotice(`${mealChoice.period}供应菜单已更新`);
   }
 
   function addToCart(dish: Dish) {
     setCart((items) => {
       const existing = items.find((item) => item.dish.id === dish.id);
-      if (existing) {
-        return items.map((item) => (item.dish.id === dish.id ? { ...item, quantity: item.quantity + 1 } : item));
-      }
+      if (existing) return items.map((item) => (item.dish.id === dish.id ? { ...item, quantity: item.quantity + 1 } : item));
       return [...items, { dish, quantity: 1, note: "" }];
     });
-    setNotice(`${dish.name} 已加入${mealContext.period}菜单`);
+    setNotice(`${dish.name} 已加入${mealChoice.period}菜单`);
   }
 
   function updateCart(dishId: string, patch: Partial<CartItem>) {
@@ -488,13 +709,14 @@ export default function Home() {
     try {
       const newOrders: NewOrder[] = cart.map((item) => ({
         customer_name: session.person,
+        chef_name: item.dish.created_by,
         dish_id: item.dish.id,
         dish_name: item.dish.name,
         dish_image_url: item.dish.image_url,
         quantity: item.quantity,
         note: item.note,
-        meal_date: mealContext.date,
-        meal_period: mealContext.period
+        meal_date: mealChoice.date,
+        meal_period: mealChoice.period
       }));
 
       if (backendMode === "local") {
@@ -522,8 +744,9 @@ export default function Home() {
         );
         await loadData();
       }
+
       setCart([]);
-      setNotice(`${mealContext.period}菜单已发送给厨师`);
+      setNotice(`${mealChoice.period}菜单已发送给${selectedChef}`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "提交失败");
     } finally {
@@ -574,23 +797,24 @@ export default function Home() {
     await loadData();
   }
 
-  async function clearFinishedHistory(scope: "all" | "mine") {
+  async function clearFinishedHistory(scope: "chef" | "mine") {
     if (!session) return;
     if (backendMode === "local") {
       const nextOrders = orders.filter((order) => {
-        const isFinished = order.status === "已完成" || order.status === "已拒绝";
-        if (!isFinished) return true;
-        return scope === "mine" ? order.customer_name !== session.person : false;
+        const done = order.status === "已完成" || order.status === "已拒绝";
+        if (!done) return true;
+        if (scope === "mine") return order.customer_name !== session.person;
+        return order.chef_name !== session.person;
       });
       setOrders(nextOrders);
       writeLocal(localOrdersKey, nextOrders);
-      setNotice("已完成历史已永久清除");
+      setNotice("已结束历史已清除");
       return;
     }
-    const query = scope === "mine" ? `?customer=${encodeURIComponent(session.person)}` : "";
+    const query = scope === "mine" ? `?customer=${encodeURIComponent(session.person)}` : "?all=true";
     await apiFetch<{ ok: boolean }>(`/api/orders${query}`, accessCode, { method: "DELETE" });
     await loadData();
-    setNotice("已完成历史已永久清除");
+    setNotice("已结束历史已清除");
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -603,15 +827,13 @@ export default function Home() {
         <AmbientDecor />
         <section className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-md flex-col justify-center">
           <div className="mb-7 flex items-center justify-center gap-3">
-            {PEOPLE.map((person) => (
-              <Avatar key={person} person={person} size="lg" />
-            ))}
+            {PEOPLE.map((person) => <Avatar key={person} person={person} size="lg" />)}
           </div>
           <div className="glass-panel p-6 shadow-soft">
             <div className="mb-6 text-center">
               <p className="section-kicker">Private kitchen link</p>
               <h1 className="mt-3 text-3xl font-black text-slate-950">点菜舱启动</h1>
-              <p className="mt-3 text-sm leading-6 text-slate-600">输入你们的共享访问码，进入哈基工和哈吉梁的小小菜单宇宙。</p>
+              <p className="mt-3 text-sm leading-6 text-slate-600">输入共享访问码，进入你们俩的双向小厨房。</p>
             </div>
             <form onSubmit={unlock} className="space-y-4">
               <label className="field-label" htmlFor="access-code">访问码</label>
@@ -645,7 +867,7 @@ export default function Home() {
             subtitle="每个人都可以独立成为厨师或顾客"
             notice={notice}
             mode={backendMode}
-            mealContext={mealContext}
+            mealChoice={mealChoice}
             onRefresh={() => loadData()}
             isRefreshing={isRefreshing}
           />
@@ -683,10 +905,10 @@ export default function Home() {
       <section className="mx-auto w-full max-w-7xl">
         <TopBar
           title={isChef ? "厨师台在线" : "顾客点餐台"}
-          subtitle={`${session.person} / ${isChef ? "今天掌勺" : "今天点餐"}`}
+          subtitle={`${session.person} / ${isChef ? "管理自己的菜" : `点 ${otherPerson(session.person)} 的菜`}`}
           notice={notice}
           mode={backendMode}
-          mealContext={mealContext}
+          mealChoice={mealChoice}
           person={session.person}
           onRefresh={() => loadData()}
           isRefreshing={isRefreshing}
@@ -700,39 +922,52 @@ export default function Home() {
 
         {isChef ? (
           <ChefDashboard
+            person={session.person}
+            mealChoice={mealChoice}
             categories={categories}
-            myCategories={myCategories}
-            activeDishes={activeDishes}
-            inactiveDishes={inactiveDishes}
+            chefTags={chefTags}
+            activePath={activePath}
+            activeDishes={activeChefDishes}
+            inactiveDishes={inactiveChefDishes}
+            supplyIds={selectedSupplyIds}
             unfinishedOrders={unfinishedOrders}
             finishedOrders={finishedOrders}
             dishName={dishName}
-            categoryName={categoryName}
-            selectedCategoryId={selectedCategoryId}
+            categoryText={categoryText}
             dishPreview={dishPreview}
+            editDish={editDish}
             isSavingDish={isSavingDish}
-            mealContext={mealContext}
+            onMealChoiceChange={setMealChoice}
+            onActivePathChange={setActivePath}
             onDishNameChange={setDishName}
-            onCategoryNameChange={setCategoryName}
-            onSelectedCategoryChange={setSelectedCategoryId}
+            onCategoryTextChange={setCategoryText}
             onFileChange={onFileChange}
             onSaveDish={saveDish}
-            onToggleDish={toggleDish}
+            onToggleSupply={toggleSupply}
+            onToggleDishActive={toggleDishActive}
             onDeleteDish={deleteDish}
+            onStartEdit={(dish) => setEditDish({ dish, name: dish.name, categoryText: categoriesToText(dish.categories), file: null, preview: dish.image_url })}
+            onEditDishChange={setEditDish}
+            onSaveEditDish={saveEditDish}
+            onCancelEdit={() => setEditDish(null)}
             onUpdateOrderStatus={updateOrderStatus}
-            onClearHistory={() => clearFinishedHistory("all")}
+            onClearHistory={() => clearFinishedHistory("chef")}
           />
         ) : (
           <CustomerDashboard
-            categories={categories}
-            dishes={activeDishes}
-            customerCategory={customerCategory}
+            person={session.person}
+            chef={otherPerson(session.person)}
+            mealChoice={mealChoice}
+            tags={customerTags}
+            activePath={activePath}
+            dishes={filteredCustomerDishes}
+            rawDishCount={customerMenuDishes.length}
             cart={cart}
-            currentOrders={myCurrentOrders}
-            finishedOrders={myFinishedOrders}
+            currentOrders={currentOrders}
+            finishedOrders={finishedOrders}
             isSubmittingOrder={isSubmittingOrder}
-            mealContext={mealContext}
-            onCategoryChange={setCustomerCategory}
+            onMealChoiceChange={setMealChoice}
+            onActivePathChange={setActivePath}
             onAddToCart={addToCart}
             onUpdateCart={updateCart}
             onSubmitOrders={submitOrders}
@@ -745,6 +980,14 @@ export default function Home() {
   );
 }
 
+function collectTags(dishes: Dish[]) {
+  const map = new Map<string, DishCategory>();
+  for (const dish of dishes) {
+    for (const category of dish.categories) map.set(category.id, category);
+  }
+  return Array.from(map.values()).sort((a, b) => categoryLabel(a).localeCompare(categoryLabel(b), "zh-CN"));
+}
+
 function TopBar({
   title,
   subtitle,
@@ -752,7 +995,7 @@ function TopBar({
   mode,
   action,
   isRefreshing,
-  mealContext,
+  mealChoice,
   person,
   onRefresh
 }: {
@@ -762,7 +1005,7 @@ function TopBar({
   mode: BackendMode;
   action?: ReactNode;
   isRefreshing: boolean;
-  mealContext: { date: string; period: MealPeriod };
+  mealChoice: MealChoice;
   person?: PersonName;
   onRefresh: () => void;
 }) {
@@ -779,9 +1022,7 @@ function TopBar({
         <div className="min-w-0">
           <p className="truncate text-xs font-bold uppercase tracking-[0.18em] text-cyan-600">{subtitle}</p>
           <h1 className="truncate text-2xl font-black text-slate-950 sm:text-3xl">{title}</h1>
-          <p className="mt-1 text-xs font-bold text-pink-500">
-            {mealContext.date} / 当前{mealContext.period}
-          </p>
+          <p className="mt-1 text-xs font-bold text-pink-500">{mealChoice.date} / {mealChoice.period}</p>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -795,161 +1036,333 @@ function TopBar({
   );
 }
 
-function ChefDashboard({
+function MealSelector({ value, onChange }: { value: MealChoice; onChange: (next: MealChoice) => void }) {
+  return (
+    <div className="glass-panel p-4">
+      <div className="grid gap-3 sm:grid-cols-[9.5rem_1fr] sm:items-end">
+        <div>
+          <label className="field-label" htmlFor="meal-date">日期</label>
+          <input
+            id="meal-date"
+            className="text-input"
+            type="date"
+            value={value.date}
+            onChange={(event) => onChange({ ...value, date: event.target.value })}
+          />
+        </div>
+        <div>
+          <p className="field-label">餐次</p>
+          <div className="segmented-control">
+            {MEAL_PERIODS.map((period) => (
+              <button
+                key={period}
+                className={value.period === period ? "segment-active" : "segment-button"}
+                onClick={() => onChange({ ...value, period })}
+              >
+                {period}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryNavigator({
   categories,
-  myCategories,
-  activeDishes,
-  inactiveDishes,
-  unfinishedOrders,
-  finishedOrders,
-  dishName,
-  categoryName,
-  selectedCategoryId,
-  dishPreview,
-  isSavingDish,
-  mealContext,
-  onDishNameChange,
-  onCategoryNameChange,
-  onSelectedCategoryChange,
-  onFileChange,
-  onSaveDish,
-  onToggleDish,
-  onDeleteDish,
-  onUpdateOrderStatus,
-  onClearHistory
+  activePath,
+  onChange
 }: {
   categories: DishCategory[];
-  myCategories: DishCategory[];
+  activePath: string;
+  onChange: (value: string) => void;
+}) {
+  const picked = keyToPath(activePath);
+  const depth = picked.length;
+  const nextOptions = unique(
+    categories
+      .filter((category) => picked.every((part, index) => category.path[index] === part))
+      .map((category) => category.path[depth])
+  );
+  const breadcrumb = picked.map((part, index) => ({
+    label: part,
+    key: pathKey(picked.slice(0, index + 1))
+  }));
+
+  return (
+    <div className="space-y-3">
+      <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+        <button className={activePath === "all" ? "tag-chip-active" : "tag-chip"} onClick={() => onChange("all")}>
+          全部
+        </button>
+        {breadcrumb.map((item, index) => (
+          <button key={item.key} className="tag-chip-active" onClick={() => onChange(item.key)}>
+            {index > 0 ? " / " : ""}
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div className="category-menu-panel">
+        {nextOptions.length === 0 ? (
+          <p className="px-1 text-sm font-semibold text-slate-500">已经到最细分类，下面显示对应菜品。</p>
+        ) : (
+          nextOptions.map((option) => {
+            const nextPath = [...picked, option];
+            return (
+              <button key={pathKey(nextPath)} className="category-menu-button" onClick={() => onChange(pathKey(nextPath))}>
+                {option}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CategoryPathBuilder({
+  categories,
+  value,
+  onChange
+}: {
+  categories: DishCategory[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [level1, setLevel1] = useState("");
+  const [level2, setLevel2] = useState("");
+  const [level3, setLevel3] = useState("");
+  const selectedPaths = parseCategoryText(value);
+  const level1Options = unique(categories.map((category) => category.path[0]));
+  const level2Options = unique(
+    categories.filter((category) => category.path[0] === level1).map((category) => category.path[1])
+  );
+  const level3Options = unique(
+    categories
+      .filter((category) => category.path[0] === level1 && category.path[1] === level2)
+      .map((category) => category.path[2])
+  );
+
+  function addPath() {
+    const path = [level1, level2, level3].map((item) => item.trim()).filter(Boolean).slice(0, 3);
+    if (path.length === 0) return;
+    const exists = selectedPaths.some((item) => pathKey(item) === pathKey(path));
+    const next = exists ? selectedPaths : [...selectedPaths, path];
+    onChange(next.map((item) => item.join("/")).join("，"));
+    setLevel1("");
+    setLevel2("");
+    setLevel3("");
+  }
+
+  function removePath(target: string[]) {
+    const next = selectedPaths.filter((item) => pathKey(item) !== pathKey(target));
+    onChange(next.map((item) => item.join("/")).join("，"));
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <CategoryCombo id="category-level-1" label="一级目录" value={level1} options={level1Options} placeholder="如：素菜" onChange={(next) => { setLevel1(next); setLevel2(""); setLevel3(""); }} />
+        <CategoryCombo id="category-level-2" label="二级目录" value={level2} options={level2Options} placeholder="如：青菜" onChange={(next) => { setLevel2(next); setLevel3(""); }} />
+        <CategoryCombo id="category-level-3" label="三级目录" value={level3} options={level3Options} placeholder="如：清炒" onChange={setLevel3} />
+      </div>
+      <button type="button" className="ghost-button w-full" onClick={addPath}>
+        <Plus size={16} />
+        加入这个分类
+      </button>
+      <div className="flex flex-wrap gap-2">
+        {selectedPaths.length === 0 ? (
+          <span className="text-sm font-semibold text-slate-500">还没选择分类，默认会进入“未分类”。</span>
+        ) : (
+          selectedPaths.map((path) => (
+            <button key={pathKey(path)} type="button" className="selected-category-pill" onClick={() => removePath(path)}>
+              {path.join(" / ")}
+              <X size={13} />
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CategoryCombo({
+  id,
+  label,
+  value,
+  options,
+  placeholder,
+  onChange
+}: {
+  id: string;
+  label: string;
+  value: string;
+  options: string[];
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <label className="field-label" htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        className="text-input"
+        list={`${id}-list`}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+      <datalist id={`${id}-list`}>
+        {options.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+function ChefDashboard(props: {
+  person: PersonName;
+  mealChoice: MealChoice;
+  categories: DishCategory[];
+  chefTags: DishCategory[];
+  activePath: string;
   activeDishes: Dish[];
   inactiveDishes: Dish[];
+  supplyIds: Set<string>;
   unfinishedOrders: Order[];
   finishedOrders: Order[];
   dishName: string;
-  categoryName: string;
-  selectedCategoryId: string;
+  categoryText: string;
   dishPreview: string;
+  editDish: EditDishState | null;
   isSavingDish: boolean;
-  mealContext: { date: string; period: MealPeriod };
+  onMealChoiceChange: (value: MealChoice) => void;
+  onActivePathChange: (value: string) => void;
   onDishNameChange: (value: string) => void;
-  onCategoryNameChange: (value: string) => void;
-  onSelectedCategoryChange: (value: string) => void;
+  onCategoryTextChange: (value: string) => void;
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveDish: (event: FormEvent<HTMLFormElement>) => void;
-  onToggleDish: (dish: Dish) => void;
+  onToggleSupply: (dish: Dish) => void;
+  onToggleDishActive: (dish: Dish) => void;
   onDeleteDish: (dish: Dish) => void;
+  onStartEdit: (dish: Dish) => void;
+  onEditDishChange: (value: EditDishState | null) => void;
+  onSaveEditDish: (event: FormEvent<HTMLFormElement>) => void;
+  onCancelEdit: () => void;
   onUpdateOrderStatus: (order: Order, status: OrderStatus) => void;
   onClearHistory: () => void;
 }) {
+  const filteredActiveDishes = props.activeDishes.filter(
+    (dish) => dishMatchesPath(dish, props.activePath)
+  );
+
   return (
     <div className="mt-5 grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
       <section className="space-y-5">
-        <form onSubmit={onSaveDish} className="glass-panel p-5">
+        <MealSelector value={props.mealChoice} onChange={props.onMealChoiceChange} />
+
+        <form onSubmit={props.onSaveDish} className="glass-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="section-kicker">Chef upload</p>
-              <h2 className="section-title">上架新菜</h2>
+              <p className="section-kicker">Dish archive</p>
+              <h2 className="section-title">新增历史菜品</h2>
             </div>
             <Store className="text-pink-500" size={25} />
           </div>
           <div className="grid gap-4">
             <div>
               <label className="field-label" htmlFor="dish-name">菜品名称</label>
-              <input
-                id="dish-name"
-                className="text-input"
-                value={dishName}
-                onChange={(event) => onDishNameChange(event.target.value)}
-                placeholder="比如：清炒时蔬"
-              />
+              <input id="dish-name" className="text-input" value={props.dishName} onChange={(event) => props.onDishNameChange(event.target.value)} placeholder="比如：清蒸鸡腿" />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="field-label" htmlFor="dish-category">选择菜系</label>
-                <select
-                  id="dish-category"
-                  className="select-input"
-                  value={selectedCategoryId}
-                  onChange={(event) => onSelectedCategoryChange(event.target.value)}
-                >
-                  <option value="">新建/未分类</option>
-                  {myCategories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="field-label" htmlFor="new-category">新菜系</label>
-                <input
-                  id="new-category"
-                  className="text-input"
-                  value={categoryName}
-                  onChange={(event) => onCategoryNameChange(event.target.value)}
-                  placeholder="比如：素菜"
-                />
-              </div>
+            <div>
+              <p className="field-label">所属分类</p>
+              <CategoryPathBuilder categories={props.chefTags} value={props.categoryText} onChange={props.onCategoryTextChange} />
             </div>
             <label className="upload-box">
-              {dishPreview ? (
+              {props.dishPreview ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={dishPreview} alt="菜品预览" className="h-full w-full rounded-[22px] object-cover" />
+                <img src={props.dishPreview} alt="菜品预览" className="h-full w-full rounded-[22px] object-cover" />
               ) : (
                 <span className="flex flex-col items-center gap-2 text-slate-500">
                   <Camera size={28} />
                   上传菜品图片
                 </span>
               )}
-              <input className="sr-only" type="file" accept="image/*" onChange={onFileChange} />
+              <input className="sr-only" type="file" accept="image/*" onChange={props.onFileChange} />
             </label>
-            <button className="primary-button w-full" disabled={isSavingDish} type="submit">
-              {isSavingDish ? <Loader2 className="animate-spin" size={18} /> : <Cloud size={18} />}
-              保存到菜单宇宙
+            <button className="primary-button w-full" disabled={props.isSavingDish} type="submit">
+              {props.isSavingDish ? <Loader2 className="animate-spin" size={18} /> : <Cloud size={18} />}
+              保存到历史菜品库
             </button>
           </div>
         </form>
 
-        <DishShelf
-          title="已上架菜品"
-          countText={`${activeDishes.length} 道亮灯`}
-          dishes={activeDishes}
-          categories={categories}
-          onToggleDish={onToggleDish}
-        />
-        <DishShelf
-          title="已下架菜品"
-          countText={`${inactiveDishes.length} 道下架`}
-          dishes={inactiveDishes}
-          categories={categories}
-          onToggleDish={onToggleDish}
-          onDeleteDish={onDeleteDish}
-          emptyText="下架菜品会在这里沉睡，之后可以重新上架或删除。"
-        />
-      </section>
+        {props.editDish ? (
+          <form onSubmit={props.onSaveEditDish} className="glass-panel p-5">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="section-kicker">Edit dish</p>
+                <h2 className="section-title">修改菜品信息</h2>
+              </div>
+              <button className="ghost-icon-button" type="button" onClick={props.onCancelEdit} aria-label="关闭编辑">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="grid gap-4">
+              <input className="text-input" value={props.editDish.name} onChange={(event) => props.onEditDishChange({ ...props.editDish!, name: event.target.value })} />
+              <CategoryPathBuilder
+                categories={props.chefTags}
+                value={props.editDish.categoryText}
+                onChange={(next) => props.onEditDishChange({ ...props.editDish!, categoryText: next })}
+              />
+              <label className="upload-box">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={props.editDish.preview || props.editDish.dish.image_url} alt="编辑预览" className="h-full w-full rounded-[22px] object-cover" />
+                <input
+                  className="sr-only"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => props.onEditDishChange({ ...props.editDish!, file: event.target.files?.[0] ?? null })}
+                />
+              </label>
+              <button className="primary-button w-full" disabled={props.isSavingDish} type="submit">
+                <Save size={18} />
+                保存修改
+              </button>
+            </div>
+          </form>
+        ) : null}
 
-      <section className="space-y-5">
+        <section className="glass-panel p-5">
+          <div className="mb-4">
+            <p className="section-kicker">Tags</p>
+            <h2 className="section-title">历史菜品筛选</h2>
+          </div>
+          <CategoryNavigator categories={props.chefTags} activePath={props.activePath} onChange={props.onActivePathChange} />
+        </section>
+
         <section className="glass-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="section-kicker">Orders incoming</p>
-              <h2 className="section-title">{mealContext.period}未完成订单</h2>
+              <p className="section-kicker">Serving now</p>
+              <h2 className="section-title">{props.mealChoice.period}供应菜品</h2>
             </div>
-            <div className={unfinishedOrders.length > 0 ? "alarm-badge" : "mini-badge"}>
-              <Bell size={15} />
-              {unfinishedOrders.length} 待处理
-            </div>
+            <span className="mini-badge">{props.supplyIds.size} 道</span>
           </div>
           <div className="grid gap-3">
-            {unfinishedOrders.length === 0 ? (
-              <EmptyState text={`当前${mealContext.period}还没有待处理订单。`} />
+            {filteredActiveDishes.length === 0 ? (
+              <EmptyState text="历史菜品库还没有可供应菜品。" />
             ) : (
-              unfinishedOrders.map((order) => (
-                <OrderCard
-                  key={order.id}
-                  order={order}
-                  showCustomer
-                  chefMode
-                  onUpdateStatus={(status) => onUpdateOrderStatus(order, status)}
+              filteredActiveDishes.map((dish) => (
+                <DishRow
+                  key={dish.id}
+                  dish={dish}
+                  supplySelected={props.supplyIds.has(dish.id)}
+                  onToggleSupply={() => props.onToggleSupply(dish)}
+                  onToggleActive={() => props.onToggleDishActive(dish)}
+                  onEdit={() => props.onStartEdit(dish)}
                 />
               ))
             )}
@@ -957,83 +1370,87 @@ function ChefDashboard({
         </section>
 
         <section className="glass-panel p-5">
-          <HistoryHeader title="已完成订单" count={finishedOrders.length} onClearHistory={onClearHistory} />
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="section-kicker">Paused archive</p>
+              <h2 className="section-title">停用菜品</h2>
+            </div>
+            <span className="mini-badge">{props.inactiveDishes.length} 道</span>
+          </div>
           <div className="grid gap-3">
-            {finishedOrders.length === 0 ? (
-              <EmptyState text="完成或拒绝的订单会进入这里。" />
+            {props.inactiveDishes.length === 0 ? (
+              <EmptyState text="停用后的历史菜品会在这里，可恢复或删除。" />
             ) : (
-              finishedOrders.map((order) => <OrderCard key={order.id} order={order} showCustomer />)
+              props.inactiveDishes.map((dish) => (
+                <DishRow
+                  key={dish.id}
+                  dish={dish}
+                  onToggleActive={() => props.onToggleDishActive(dish)}
+                  onDelete={() => props.onDeleteDish(dish)}
+                />
+              ))
             )}
           </div>
-          <p className="mt-3 text-xs font-semibold text-slate-500">
-            厨师清除历史会永久删除全部已完成和已拒绝订单。
-          </p>
         </section>
       </section>
+
+      <OrderPanels
+        title={`${props.mealChoice.period}收到的订单`}
+        unfinishedOrders={props.unfinishedOrders}
+        finishedOrders={props.finishedOrders}
+        showCustomer
+        chefMode
+        onUpdateOrderStatus={props.onUpdateOrderStatus}
+        onClearHistory={props.onClearHistory}
+      />
     </div>
   );
 }
 
-function CustomerDashboard({
-  categories,
-  dishes,
-  customerCategory,
-  cart,
-  currentOrders,
-  finishedOrders,
-  isSubmittingOrder,
-  mealContext,
-  onCategoryChange,
-  onAddToCart,
-  onUpdateCart,
-  onSubmitOrders,
-  onRateOrder,
-  onClearHistory
-}: {
-  categories: DishCategory[];
+function CustomerDashboard(props: {
+  person: PersonName;
+  chef: PersonName;
+  mealChoice: MealChoice;
+  tags: DishCategory[];
+  activePath: string;
   dishes: Dish[];
-  customerCategory: string;
+  rawDishCount: number;
   cart: CartItem[];
   currentOrders: Order[];
   finishedOrders: Order[];
   isSubmittingOrder: boolean;
-  mealContext: { date: string; period: MealPeriod };
-  onCategoryChange: (value: string) => void;
+  onMealChoiceChange: (value: MealChoice) => void;
+  onActivePathChange: (value: string) => void;
   onAddToCart: (dish: Dish) => void;
   onUpdateCart: (dishId: string, patch: Partial<CartItem>) => void;
   onSubmitOrders: () => void;
   onRateOrder: (order: Order, rating: number) => void;
   onClearHistory: () => void;
 }) {
-  const categoryOptions = useMemo(() => {
-    const used = new Set(dishes.map((dish) => dish.category_id || `name-${dish.category_name || "未分类"}`));
-    return categories.filter((category) => used.has(category.id));
-  }, [categories, dishes]);
-  const filteredDishes = useMemo(
-    () => dishes.filter((dish) => customerCategory === "all" || dish.category_id === customerCategory),
-    [customerCategory, dishes]
-  );
-  const unfinished = currentOrders.filter((order) => order.status === "未完成");
-  const currentFinished = currentOrders.filter((order) => order.status !== "未完成");
+  const unfinished = props.currentOrders.filter((order) => order.status === "未完成");
+  const currentFinished = props.currentOrders.filter((order) => order.status !== "未完成");
 
   return (
     <div className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-      <section className="glass-panel p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="section-kicker">Cute tech menu</p>
-            <h2 className="section-title">{mealContext.period}可点</h2>
+      <section className="space-y-5">
+        <MealSelector value={props.mealChoice} onChange={props.onMealChoiceChange} />
+        <section className="glass-panel p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="section-kicker">Cute tech menu</p>
+              <h2 className="section-title">点 {props.chef} 的{props.mealChoice.period}</h2>
+            </div>
+            <span className="mini-badge">{props.rawDishCount} 道供应</span>
           </div>
-          <select className="select-input max-w-44" value={customerCategory} onChange={(event) => onCategoryChange(event.target.value)}>
-            <option value="all">全部菜系</option>
-            {categoryOptions.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <CategoryMenu dishes={filteredDishes} categories={categories} onAddToCart={onAddToCart} />
+          <CategoryNavigator categories={props.tags} activePath={props.activePath} onChange={props.onActivePathChange} />
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {props.dishes.length === 0 ? (
+              <EmptyState text={`${props.chef} 当前餐次还没有供应符合标签的菜。`} />
+            ) : (
+              props.dishes.map((dish) => <DishCard key={dish.id} dish={dish} onAdd={() => props.onAddToCart(dish)} />)
+            )}
+          </div>
+        </section>
       </section>
 
       <aside className="space-y-5">
@@ -1046,14 +1463,14 @@ function CustomerDashboard({
             <Heart className="text-pink-500" size={23} />
           </div>
           <div className="space-y-3">
-            {cart.length === 0 ? (
-              <EmptyState text={`把喜欢的菜加入${mealContext.period}菜单吧。`} />
+            {props.cart.length === 0 ? (
+              <EmptyState text={`把 ${props.chef} 供应的菜加入${props.mealChoice.period}菜单吧。`} />
             ) : (
-              cart.map((item) => <CartRow key={item.dish.id} item={item} onUpdate={(patch) => onUpdateCart(item.dish.id, patch)} />)
+              props.cart.map((item) => <CartRow key={item.dish.id} item={item} onUpdate={(patch) => props.onUpdateCart(item.dish.id, patch)} />)
             )}
           </div>
-          <button className="primary-button mt-4 w-full" disabled={cart.length === 0 || isSubmittingOrder} onClick={onSubmitOrders}>
-            {isSubmittingOrder ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
+          <button className="primary-button mt-4 w-full" disabled={props.cart.length === 0 || props.isSubmittingOrder} onClick={props.onSubmitOrders}>
+            {props.isSubmittingOrder ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
             发送给厨师
           </button>
         </section>
@@ -1061,27 +1478,27 @@ function CustomerDashboard({
         <section className="glass-panel p-5">
           <div className="mb-4">
             <p className="section-kicker">Current period</p>
-            <h2 className="section-title">{mealContext.period}订单</h2>
+            <h2 className="section-title">{props.mealChoice.period}订单</h2>
           </div>
           <div className="grid gap-3">
             {[...unfinished, ...currentFinished].length === 0 ? (
-              <EmptyState text={`当前${mealContext.period}还没有订单，午饭历史不会混进晚饭。`} />
+              <EmptyState text={`当前${props.mealChoice.period}还没有订单。`} />
             ) : (
               [...unfinished, ...currentFinished].map((order) => (
-                <OrderCard key={order.id} order={order} onRateOrder={(rating) => onRateOrder(order, rating)} />
+                <OrderCard key={order.id} order={order} onRateOrder={(rating) => props.onRateOrder(order, rating)} />
               ))
             )}
           </div>
         </section>
 
         <section className="glass-panel p-5">
-          <HistoryHeader title="我的已完成历史" count={finishedOrders.length} onClearHistory={onClearHistory} />
+          <HistoryHeader title="我的已结束历史" count={props.finishedOrders.length} onClearHistory={props.onClearHistory} />
           <div className="grid gap-3">
-            {finishedOrders.length === 0 ? (
-              <EmptyState text="完成后的历史会在这里，想清空时可以一键删除。" />
+            {props.finishedOrders.length === 0 ? (
+              <EmptyState text="完成或拒绝后的历史会在这里。" />
             ) : (
-              finishedOrders.map((order) => (
-                <OrderCard key={order.id} order={order} onRateOrder={(rating) => onRateOrder(order, rating)} />
+              props.finishedOrders.map((order) => (
+                <OrderCard key={order.id} order={order} onRateOrder={(rating) => props.onRateOrder(order, rating)} />
               ))
             )}
           </div>
@@ -1091,100 +1508,65 @@ function CustomerDashboard({
   );
 }
 
-function DishShelf({
+function OrderPanels({
   title,
-  countText,
-  dishes,
-  categories,
-  emptyText = "还没有菜，先上传第一道招牌菜。",
-  onToggleDish,
-  onDeleteDish
+  unfinishedOrders,
+  finishedOrders,
+  showCustomer,
+  chefMode,
+  onUpdateOrderStatus,
+  onClearHistory
 }: {
   title: string;
-  countText: string;
-  dishes: Dish[];
-  categories: DishCategory[];
-  emptyText?: string;
-  onToggleDish: (dish: Dish) => void;
-  onDeleteDish?: (dish: Dish) => void;
+  unfinishedOrders: Order[];
+  finishedOrders: Order[];
+  showCustomer?: boolean;
+  chefMode?: boolean;
+  onUpdateOrderStatus: (order: Order, status: OrderStatus) => void;
+  onClearHistory: () => void;
 }) {
   return (
-    <section className="glass-panel p-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="section-kicker">Permanent menu</p>
-          <h2 className="section-title">{title}</h2>
+    <section className="space-y-5">
+      <section className="glass-panel p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <p className="section-kicker">Orders incoming</p>
+            <h2 className="section-title">{title}</h2>
+          </div>
+          <div className={unfinishedOrders.length > 0 ? "alarm-badge" : "mini-badge"}>
+            <Bell size={15} />
+            {unfinishedOrders.length} 待处理
+          </div>
         </div>
-        <span className="mini-badge">{countText}</span>
-      </div>
-      <CategoryRows dishes={dishes} categories={categories} onToggleDish={onToggleDish} onDeleteDish={onDeleteDish} emptyText={emptyText} />
+        <div className="grid gap-3">
+          {unfinishedOrders.length === 0 ? (
+            <EmptyState text="当前餐次还没有待处理订单。" />
+          ) : (
+            unfinishedOrders.map((order) => (
+              <OrderCard
+                key={order.id}
+                order={order}
+                showCustomer={showCustomer}
+                chefMode={chefMode}
+                onUpdateStatus={(status) => onUpdateOrderStatus(order, status)}
+              />
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="glass-panel p-5">
+        <HistoryHeader title="已结束订单" count={finishedOrders.length} onClearHistory={onClearHistory} />
+        <div className="grid gap-3">
+          {finishedOrders.length === 0 ? (
+            <EmptyState text="完成或拒绝的订单会进入这里。" />
+          ) : (
+            finishedOrders.map((order) => <OrderCard key={order.id} order={order} showCustomer={showCustomer} />)
+          )}
+        </div>
+      </section>
     </section>
   );
-}
-
-function CategoryRows({
-  dishes,
-  categories,
-  emptyText,
-  onToggleDish,
-  onDeleteDish
-}: {
-  dishes: Dish[];
-  categories: DishCategory[];
-  emptyText: string;
-  onToggleDish: (dish: Dish) => void;
-  onDeleteDish?: (dish: Dish) => void;
-}) {
-  const grouped = groupDishes(dishes, categories);
-  if (dishes.length === 0) return <EmptyState text={emptyText} />;
-  return (
-    <div className="space-y-4">
-      {grouped.map((group) => (
-        <div key={group.name}>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="category-dot" />
-            <h3 className="text-sm font-black text-slate-800">{group.name}</h3>
-          </div>
-          <div className="grid gap-3">
-            {group.dishes.map((dish) => (
-              <DishRow key={dish.id} dish={dish} onToggle={() => onToggleDish(dish)} onDelete={onDeleteDish ? () => onDeleteDish(dish) : undefined} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CategoryMenu({ dishes, categories, onAddToCart }: { dishes: Dish[]; categories: DishCategory[]; onAddToCart: (dish: Dish) => void }) {
-  const grouped = groupDishes(dishes, categories);
-  if (dishes.length === 0) return <EmptyState text="厨师还没有上架符合条件的菜品。" />;
-  return (
-    <div className="space-y-5">
-      {grouped.map((group) => (
-        <section key={group.name}>
-          <div className="mb-3 flex items-center gap-2">
-            <span className="category-dot" />
-            <h3 className="text-base font-black text-slate-950">{group.name}</h3>
-            <span className="mini-badge">{group.dishes.length} 道</span>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {group.dishes.map((dish) => <DishCard key={dish.id} dish={dish} onAdd={() => onAddToCart(dish)} />)}
-          </div>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-function groupDishes(dishes: Dish[], categories: DishCategory[]) {
-  const categoryNames = new Map(categories.map((category) => [category.id, category.name]));
-  const map = new Map<string, Dish[]>();
-  for (const dish of dishes) {
-    const name = dish.category_name || (dish.category_id ? categoryNames.get(dish.category_id) : null) || "未分类";
-    map.set(name, [...(map.get(name) ?? []), dish]);
-  }
-  return Array.from(map.entries()).map(([name, groupedDishes]) => ({ name, dishes: groupedDishes }));
 }
 
 function DishCard({ dish, onAdd }: { dish: Dish; onAdd: () => void }) {
@@ -1203,28 +1585,69 @@ function DishCard({ dish, onAdd }: { dish: Dish; onAdd: () => void }) {
           <Plus size={19} />
         </button>
       </div>
+      <CategoryBadges categories={dish.categories} />
     </article>
   );
 }
 
-function DishRow({ dish, onToggle, onDelete }: { dish: Dish; onToggle: () => void; onDelete?: () => void }) {
+function DishRow({
+  dish,
+  supplySelected,
+  onToggleSupply,
+  onToggleActive,
+  onEdit,
+  onDelete
+}: {
+  dish: Dish;
+  supplySelected?: boolean;
+  onToggleSupply?: () => void;
+  onToggleActive: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
   return (
-    <article className="flex items-center gap-3 rounded-[22px] border border-white/70 bg-white/55 p-3">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={dish.image_url} alt={dish.name} className="h-16 w-16 rounded-2xl object-cover" />
-      <div className="min-w-0 flex-1">
-        <h3 className="truncate font-black text-slate-950">{dish.name}</h3>
-        <p className="text-xs text-slate-500">上架人：{dish.created_by}</p>
-      </div>
-      <button className={dish.is_active ? "toggle-on" : "toggle-off"} onClick={onToggle}>
-        {dish.is_active ? "下架" : "上架"}
-      </button>
-      {onDelete ? (
-        <button className="danger-icon-button" onClick={onDelete} aria-label={`删除 ${dish.name}`}>
-          <Trash2 size={16} />
+    <article className="rounded-[22px] border border-white/70 bg-white/55 p-3">
+      <div className="flex items-center gap-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={dish.image_url} alt={dish.name} className="h-16 w-16 rounded-2xl object-cover" />
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate font-black text-slate-950">{dish.name}</h3>
+          <p className="text-xs text-slate-500">厨师：{dish.created_by}</p>
+        </div>
+        {onToggleSupply ? (
+          <button className={supplySelected ? "toggle-on" : "toggle-off"} onClick={onToggleSupply}>
+            {supplySelected ? "供应中" : "供应"}
+          </button>
+        ) : null}
+        <button className={dish.is_active ? "toggle-on" : "toggle-off"} onClick={onToggleActive}>
+          {dish.is_active ? "停用" : "恢复"}
         </button>
-      ) : null}
+        {onEdit ? (
+          <button className="ghost-icon-button" onClick={onEdit} aria-label={`编辑 ${dish.name}`}>
+            <Edit3 size={16} />
+          </button>
+        ) : null}
+        {onDelete ? (
+          <button className="danger-icon-button" onClick={onDelete} aria-label={`删除 ${dish.name}`}>
+            <Trash2 size={16} />
+          </button>
+        ) : null}
+      </div>
+      <CategoryBadges categories={dish.categories} />
     </article>
+  );
+}
+
+function CategoryBadges({ categories }: { categories: DishCategory[] }) {
+  if (categories.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {categories.map((category) => (
+        <span className="category-badge" key={category.id}>
+          {categoryLabel(category)}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -1247,12 +1670,7 @@ function CartRow({ item, onUpdate }: { item: CartItem; onUpdate: (patch: Partial
           </div>
         </div>
       </div>
-      <input
-        className="note-input mt-3"
-        value={item.note}
-        onChange={(event) => onUpdate({ note: event.target.value })}
-        placeholder="备注：少糖/多辣/要爱心摆盘"
-      />
+      <input className="note-input mt-3" value={item.note} onChange={(event) => onUpdate({ note: event.target.value })} placeholder="备注：少糖/多辣/要爱心摆盘" />
     </article>
   );
 }
@@ -1286,9 +1704,7 @@ function OrderCard({
             x {order.quantity}
             {showCustomer ? ` / ${order.customer_name}` : ""}
           </p>
-          <p className="mt-1 text-xs font-semibold text-slate-500">
-            点单：{formatTime(order.created_at)} / {order.meal_period}
-          </p>
+          <p className="mt-1 text-xs font-semibold text-slate-500">点单：{formatTime(order.created_at)} / {order.meal_period}</p>
           {order.note ? <p className="mt-1 text-sm text-pink-600">备注：{order.note}</p> : null}
           {order.rating ? <StarRating value={order.rating} readonly /> : null}
         </div>
@@ -1314,13 +1730,7 @@ function StarRating({ value, readonly = false, onRate }: { value: number; readon
   return (
     <div className="mt-3 flex items-center gap-1">
       {[1, 2, 3, 4, 5].map((star) => (
-        <button
-          key={star}
-          className={star <= value ? "star-button-on" : "star-button"}
-          onClick={() => onRate?.(star)}
-          disabled={readonly}
-          aria-label={`${star} 星`}
-        >
+        <button key={star} className={star <= value ? "star-button-on" : "star-button"} onClick={() => onRate?.(star)} disabled={readonly} aria-label={`${star} 星`}>
           <Star size={16} fill="currentColor" />
         </button>
       ))}
@@ -1347,8 +1757,7 @@ function HistoryHeader({ title, count, onClearHistory }: { title: string; count:
 }
 
 function Avatar({ person, size }: { person: PersonName; size: "sm" | "md" | "lg" }) {
-  const className =
-    size === "lg" ? "avatar avatar-lg" : size === "md" ? "avatar avatar-md" : "avatar avatar-sm";
+  const className = size === "lg" ? "avatar avatar-lg" : size === "md" ? "avatar avatar-md" : "avatar avatar-sm";
   return (
     <div className={className}>
       {/* eslint-disable-next-line @next/next/no-img-element */}

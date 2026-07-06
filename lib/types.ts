@@ -11,7 +11,19 @@ export type MealPeriod = (typeof MEAL_PERIODS)[number];
 export type DishCategory = {
   id: string;
   name: string;
+  path: string[];
   created_by: PersonName;
+  created_at: string;
+};
+
+export type DishTag = DishCategory;
+
+export type DishAvailability = {
+  id: string;
+  chef_name: PersonName;
+  dish_id: string;
+  meal_date: string;
+  meal_period: MealPeriod;
   created_at: string;
 };
 
@@ -22,6 +34,7 @@ export type Dish = {
   created_by: PersonName;
   category_id: string | null;
   category_name?: string | null;
+  categories: DishCategory[];
   is_active: boolean;
   created_at: string;
   deleted_at: string | null;
@@ -38,6 +51,7 @@ export type Order = {
   status: OrderStatus;
   meal_date: string;
   meal_period: MealPeriod;
+  chef_name: PersonName | null;
   completed_at: string | null;
   rejected_at: string | null;
   rating: number | null;
@@ -52,6 +66,8 @@ export type NewDish = {
   created_by: PersonName;
   category_id?: string | null;
   category_name?: string;
+  category_ids?: string[];
+  category_paths?: string[][];
 };
 
 export type NewOrder = {
@@ -63,6 +79,7 @@ export type NewOrder = {
   note?: string;
   meal_date: string;
   meal_period: MealPeriod;
+  chef_name: PersonName;
 };
 
 export type SessionChoice = {

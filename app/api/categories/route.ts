@@ -25,8 +25,12 @@ export async function POST(request: Request) {
   if (!isAuthorized(request)) return unauthorized();
 
   try {
-    const body = (await request.json()) as { name?: string; created_by?: PersonName };
-    const name = body.name?.trim();
+    const body = (await request.json()) as { name?: string; path?: string[]; created_by?: PersonName };
+    const path = (body.path?.length ? body.path : body.name?.split("/") ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const name = path.length > 0 ? path.join(" / ") : body.name?.trim();
 
     if (!name || !body.created_by) {
       return Response.json({ error: "菜系名称和创建人不能为空" }, { status: 400 });
@@ -35,7 +39,7 @@ export async function POST(request: Request) {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from("dish_categories")
-      .upsert({ name, created_by: body.created_by }, { onConflict: "name,created_by" })
+      .upsert({ name, path: path.length > 0 ? path : [name], created_by: body.created_by }, { onConflict: "name,created_by" })
       .select("*")
       .single<DishCategory>();
 

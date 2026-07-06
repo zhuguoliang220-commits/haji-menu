@@ -10,6 +10,8 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const mealDate = url.searchParams.get("meal_date");
     const mealPeriod = url.searchParams.get("meal_period");
+    const chefName = url.searchParams.get("chef_name");
+    const customerName = url.searchParams.get("customer_name");
     const supabase = getSupabaseAdmin();
     let query = supabase
       .from("orders")
@@ -18,6 +20,8 @@ export async function GET(request: Request) {
 
     if (mealDate) query = query.eq("meal_date", mealDate);
     if (mealPeriod) query = query.eq("meal_period", mealPeriod);
+    if (chefName) query = query.eq("chef_name", chefName);
+    if (customerName) query = query.eq("customer_name", customerName);
 
     const { data, error } = await query;
 
@@ -35,7 +39,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as NewOrder;
 
-    if (!body.customer_name || !body.dish_id || !body.dish_name || !body.quantity || !body.meal_date || !body.meal_period) {
+    if (!body.customer_name || !body.chef_name || !body.dish_id || !body.dish_name || !body.quantity || !body.meal_date || !body.meal_period) {
       return Response.json({ error: "订单信息不完整" }, { status: 400 });
     }
 
@@ -51,7 +55,8 @@ export async function POST(request: Request) {
         note: body.note?.trim() || null,
         status: "未完成",
         meal_date: body.meal_date,
-        meal_period: body.meal_period
+        meal_period: body.meal_period,
+        chef_name: body.chef_name
       })
       .select("*")
       .single();
@@ -70,10 +75,14 @@ export async function DELETE(request: Request) {
   try {
     const url = new URL(request.url);
     const customer = url.searchParams.get("customer");
+    const all = url.searchParams.get("all");
     const supabase = getSupabaseAdmin();
     let query = supabase.from("orders").delete().in("status", ["已完成", "已拒绝"]);
 
     if (customer) query = query.eq("customer_name", customer);
+    if (!customer && all !== "true") {
+      return Response.json({ error: "缺少可清除的订单范围" }, { status: 400 });
+    }
 
     const { error } = await query;
     if (error) throw error;

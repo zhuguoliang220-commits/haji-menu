@@ -96,7 +96,8 @@ button {
 
   .text-input,
   .note-input,
-  .select-input {
+  .select-input,
+  .textarea-input {
     @apply w-full rounded-2xl border border-white/80 bg-white/70 px-4 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-100;
   }
 
@@ -121,6 +122,11 @@ button {
 
   .note-input {
     @apply h-10 text-sm;
+  }
+
+  .textarea-input {
+    @apply min-h-24 py-3 text-sm leading-6;
+    resize: vertical;
   }
 
   .upload-box {
@@ -224,6 +230,53 @@ button {
     box-shadow: 0 0 14px rgba(236, 72, 153, 0.7);
   }
 
+  .category-badge {
+    @apply inline-flex max-w-full items-center rounded-full bg-white/70 px-2.5 py-1 text-[11px] font-black text-cyan-700;
+  }
+
+  .segmented-control {
+    @apply grid grid-cols-4 gap-2 rounded-2xl border border-white/80 bg-white/45 p-1.5;
+  }
+
+  .segment-button,
+  .segment-active {
+    @apply min-h-10 rounded-xl px-2 text-sm font-black transition;
+  }
+
+  .segment-button {
+    @apply text-slate-500;
+  }
+
+  .segment-active {
+    @apply bg-slate-950 text-white shadow-glow;
+  }
+
+  .tag-chip,
+  .tag-chip-active {
+    @apply inline-flex min-h-9 shrink-0 items-center rounded-full px-3 py-1 text-xs font-black transition;
+  }
+
+  .tag-chip {
+    @apply border border-white/80 bg-white/55 text-slate-600;
+  }
+
+  .tag-chip-active {
+    @apply bg-cyan-500 text-white shadow-glow;
+  }
+
+  .category-menu-panel {
+    @apply grid gap-2 rounded-2xl border border-white/80 bg-white/45 p-2;
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  }
+
+  .category-menu-button {
+    @apply min-h-11 rounded-xl bg-white/75 px-3 py-2 text-sm font-black text-slate-700 transition hover:bg-white;
+  }
+
+  .selected-category-pill {
+    @apply inline-flex max-w-full items-center gap-1 rounded-full bg-pink-100 px-3 py-1.5 text-xs font-black text-pink-700;
+  }
+
   .status-pill,
   .status-pill-inline {
     @apply mx-auto mt-5 flex max-w-full items-center gap-2 rounded-full border border-white/80 bg-white/65 px-4 py-2 text-xs font-bold text-slate-600 backdrop-blur-xl;
@@ -247,6 +300,14 @@ button {
     @apply bg-amber-400;
     box-shadow: 0 0 14px rgba(251, 191, 36, 0.8);
   }
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 .avatar {
