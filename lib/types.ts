@@ -55,6 +55,7 @@ export type Order = {
   completed_at: string | null;
   rejected_at: string | null;
   rating: number | null;
+  review_text: string | null;
   rated_at: string | null;
   created_at: string;
   updated_at: string;
@@ -85,4 +86,36 @@ export type NewOrder = {
 export type SessionChoice = {
   person: PersonName;
   role: Role;
+};
+
+export type ChatMessage = {
+  id: string;
+  sender_name: PersonName;
+  receiver_name: PersonName;
+  body: string;
+  created_at: string;
+};
+
+export type CustomDishRequest = {
+  id: string;
+  customer_name: PersonName;
+  chef_name: PersonName;
+  dish_name: string | null;
+  method: string | null;
+  amount: string | null;
+  note: string | null;
+  meal_date: string;
+  meal_period: MealPeriod;
+  created_at: string;
+};
+
+export type NewCustomDishRequest = {
+  customer_name: PersonName;
+  chef_name: PersonName;
+  dish_name?: string;
+  method?: string;
+  amount?: string;
+  note?: string;
+  meal_date: string;
+  meal_period: MealPeriod;
 };

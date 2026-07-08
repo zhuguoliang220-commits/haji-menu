@@ -12,7 +12,10 @@ import {
   Heart,
   Loader2,
   LogOut,
+  ChevronDown,
+  MessageCircle,
   Minus,
+  NotebookPen,
   Plus,
   Power,
   RefreshCw,
@@ -26,11 +29,14 @@ import {
   XCircle
 } from "lucide-react";
 import {
+  ChatMessage,
+  CustomDishRequest,
   Dish,
   DishAvailability,
   DishCategory,
   MEAL_PERIODS,
   MealPeriod,
+  NewCustomDishRequest,
   NewOrder,
   Order,
   OrderStatus,
@@ -59,12 +65,21 @@ type EditDishState = {
   preview: string;
 };
 
+type CustomRequestForm = {
+  dish_name: string;
+  method: string;
+  amount: string;
+  note: string;
+};
+
 const sessionKey = "haji-menu-session";
 const accessKey = "haji-menu-access";
 const localDishesKey = "haji-menu-local-dishes";
 const localOrdersKey = "haji-menu-local-orders";
 const localCategoriesKey = "haji-menu-local-categories";
 const localAvailabilityKey = "haji-menu-local-availability";
+const localMessagesKey = "haji-menu-local-messages";
+const localCustomRequestsKey = "haji-menu-local-custom-requests";
 const configuredAccessCode = process.env.NEXT_PUBLIC_APP_ACCESS_CODE || "haji-love";
 
 const avatarByPerson: Record<PersonName, string> = {
@@ -229,6 +244,7 @@ function normalizeOrder(order: Partial<Order> & { id: string; customer_name: Per
     completed_at: order.completed_at ?? null,
     rejected_at: order.rejected_at ?? null,
     rating: order.rating ?? null,
+    review_text: order.review_text ?? null,
     rated_at: order.rated_at ?? null,
     created_at: order.created_at,
     updated_at: order.updated_at ?? order.created_at
@@ -240,6 +256,31 @@ function normalizeAvailability(item: Partial<DishAvailability> & { id: string; c
     id: item.id,
     chef_name: item.chef_name,
     dish_id: item.dish_id,
+    meal_date: item.meal_date,
+    meal_period: item.meal_period,
+    created_at: item.created_at
+  };
+}
+
+function normalizeMessage(item: Partial<ChatMessage> & { id: string; sender_name: PersonName; receiver_name: PersonName; body: string; created_at: string }): ChatMessage {
+  return {
+    id: item.id,
+    sender_name: item.sender_name,
+    receiver_name: item.receiver_name,
+    body: item.body,
+    created_at: item.created_at
+  };
+}
+
+function normalizeCustomRequest(item: Partial<CustomDishRequest> & { id: string; customer_name: PersonName; chef_name: PersonName; meal_date: string; meal_period: MealPeriod; created_at: string }): CustomDishRequest {
+  return {
+    id: item.id,
+    customer_name: item.customer_name,
+    chef_name: item.chef_name,
+    dish_name: item.dish_name ?? null,
+    method: item.method ?? null,
+    amount: item.amount ?? null,
+    note: item.note ?? null,
     meal_date: item.meal_date,
     meal_period: item.meal_period,
     created_at: item.created_at
@@ -303,7 +344,16 @@ export default function Home() {
   const [dishes, setDishes] = useState<Dish[]>([]);
   const [availability, setAvailability] = useState<DishAvailability[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [customRequests, setCustomRequests] = useState<CustomDishRequest[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [chatText, setChatText] = useState("");
+  const [customRequestForm, setCustomRequestForm] = useState<CustomRequestForm>({
+    dish_name: "",
+    method: "",
+    amount: "",
+    note: ""
+  });
   const [dishName, setDishName] = useState("");
   const [categoryText, setCategoryText] = useState("");
   const [dishFile, setDishFile] = useState<File | null>(null);
@@ -319,6 +369,7 @@ export default function Home() {
 
   const isChef = session?.role === "chef";
   const selectedChef = session ? (isChef ? session.person : otherPerson(session.person)) : null;
+  const chatPartner = session ? otherPerson(session.person) : null;
 
   const visibleDishes = useMemo(() => dishes.filter((dish) => !dish.deleted_at), [dishes]);
   const chefDishes = useMemo(
@@ -380,11 +431,33 @@ export default function Home() {
       }),
     [isChef, orders, session?.person]
   );
+  const conversationMessages = useMemo(
+    () =>
+      messages.filter(
+        (message) =>
+          session &&
+          chatPartner &&
+          ((message.sender_name === session.person && message.receiver_name === chatPartner) ||
+            (message.sender_name === chatPartner && message.receiver_name === session.person))
+      ),
+    [chatPartner, messages, session]
+  );
+  const currentCustomRequests = useMemo(
+    () =>
+      customRequests.filter(
+        (request) =>
+          session &&
+          request.meal_date === mealChoice.date &&
+          request.meal_period === mealChoice.period &&
+          (isChef ? request.chef_name === session.person : request.customer_name === session.person)
+      ),
+    [customRequests, isChef, mealChoice.date, mealChoice.period, session]
+  );
 
   const loadData = useCallback(
-    async (code = accessCode) => {
+    async (code = accessCode, silent = true) => {
       if (!code) return;
-      setIsRefreshing(true);
+      if (!silent) setIsRefreshing(true);
       try {
         const [categoryResult, dishResult, orderResult, availabilityResult] = await Promise.all([
           apiFetch<{ categories: DishCategory[] }>("/api/categories", code),
@@ -392,10 +465,16 @@ export default function Home() {
           apiFetch<{ orders: Order[] }>("/api/orders", code),
           apiFetch<{ availability: DishAvailability[] }>("/api/availability", code)
         ]);
+        const [messageResult, customRequestResult] = await Promise.all([
+          apiFetch<{ messages: ChatMessage[] }>("/api/messages", code).catch(() => ({ messages: [] })),
+          apiFetch<{ requests: CustomDishRequest[] }>("/api/custom-requests", code).catch(() => ({ requests: [] }))
+        ]);
         setCategories(categoryResult.categories.map(normalizeCategory));
         setDishes(dishResult.dishes.map(normalizeDish));
         setOrders(orderResult.orders.map(normalizeOrder));
         setAvailability(availabilityResult.availability.map(normalizeAvailability));
+        setMessages(messageResult.messages.map(normalizeMessage));
+        setCustomRequests(customRequestResult.requests.map(normalizeCustomRequest));
         setBackendMode("supabase");
       } catch {
         const localCategories = readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory);
@@ -404,8 +483,10 @@ export default function Home() {
         setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
         setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
         setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
+        setMessages(readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage));
+        setCustomRequests(readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest));
       } finally {
-        setIsRefreshing(false);
+        if (!silent) setIsRefreshing(false);
       }
     },
     [accessCode]
@@ -424,13 +505,15 @@ export default function Home() {
 
   useEffect(() => {
     if (!accessGranted || !accessCode) return;
-    const interval = window.setInterval(() => void loadData(accessCode), 5000);
+    const interval = window.setInterval(() => void loadData(accessCode), 8000);
     const syncLocal = () => {
       if (backendMode === "local") {
         setCategories(readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory));
         setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
         setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
         setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
+        setMessages(readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage));
+        setCustomRequests(readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest));
       }
     };
     window.addEventListener("haji-local-sync", syncLocal);
@@ -729,6 +812,7 @@ export default function Home() {
           completed_at: null,
           rejected_at: null,
           rating: null,
+          review_text: null,
           rated_at: null,
           created_at: createdAt,
           updated_at: createdAt
@@ -779,12 +863,14 @@ export default function Home() {
     await loadData();
   }
 
-  async function rateOrder(order: Order, rating: number) {
+  async function rateOrder(order: Order, rating: number, reviewText = "") {
     if (order.status !== "已完成") return;
     const timestamp = nowIso();
     if (backendMode === "local") {
       const nextOrders = orders.map((item) =>
-        item.id === order.id ? { ...item, rating, rated_at: timestamp, updated_at: timestamp } : item
+        item.id === order.id
+          ? { ...item, rating, review_text: reviewText.trim() || null, rated_at: timestamp, updated_at: timestamp }
+          : item
       );
       setOrders(nextOrders);
       writeLocal(localOrdersKey, nextOrders);
@@ -792,9 +878,89 @@ export default function Home() {
     }
     await apiFetch<{ order: Order }>(`/api/orders/${order.id}`, accessCode, {
       method: "PATCH",
-      body: JSON.stringify({ rating })
+      body: JSON.stringify({ rating, review_text: reviewText })
     });
     await loadData();
+  }
+
+  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !chatPartner || !chatText.trim()) return;
+    const text = chatText.trim();
+    const createdAt = nowIso();
+
+    if (backendMode === "local") {
+      const nextMessages = [
+        ...messages,
+        {
+          id: localId("message"),
+          sender_name: session.person,
+          receiver_name: chatPartner,
+          body: text,
+          created_at: createdAt
+        }
+      ];
+      setMessages(nextMessages);
+      writeLocal(localMessagesKey, nextMessages);
+      setChatText("");
+      return;
+    }
+
+    await apiFetch<{ message: ChatMessage }>("/api/messages", accessCode, {
+      method: "POST",
+      body: JSON.stringify({
+        sender_name: session.person,
+        receiver_name: chatPartner,
+        body: text
+      })
+    });
+    setChatText("");
+    await loadData();
+  }
+
+  async function submitCustomRequest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !selectedChef) return;
+    const hasAnyText = Object.values(customRequestForm).some((value) => value.trim());
+    if (!hasAnyText) {
+      setNotice("自主点菜至少写一点点想法就能发送");
+      return;
+    }
+
+    const request: NewCustomDishRequest = {
+      customer_name: session.person,
+      chef_name: selectedChef,
+      dish_name: customRequestForm.dish_name,
+      method: customRequestForm.method,
+      amount: customRequestForm.amount,
+      note: customRequestForm.note,
+      meal_date: mealChoice.date,
+      meal_period: mealChoice.period
+    };
+
+    if (backendMode === "local") {
+      const nextRequest: CustomDishRequest = {
+        id: localId("custom-request"),
+        ...request,
+        dish_name: request.dish_name?.trim() || null,
+        method: request.method?.trim() || null,
+        amount: request.amount?.trim() || null,
+        note: request.note?.trim() || null,
+        created_at: nowIso()
+      };
+      const nextRequests = [nextRequest, ...customRequests];
+      setCustomRequests(nextRequests);
+      writeLocal(localCustomRequestsKey, nextRequests);
+    } else {
+      await apiFetch<{ request: CustomDishRequest }>("/api/custom-requests", accessCode, {
+        method: "POST",
+        body: JSON.stringify(request)
+      });
+      await loadData();
+    }
+
+    setCustomRequestForm({ dish_name: "", method: "", amount: "", note: "" });
+    setNotice(`想吃的已经发给${selectedChef}`);
   }
 
   async function clearFinishedHistory(scope: "chef" | "mine") {
@@ -868,7 +1034,7 @@ export default function Home() {
             notice={notice}
             mode={backendMode}
             mealChoice={mealChoice}
-            onRefresh={() => loadData()}
+            onRefresh={() => loadData(accessCode, false)}
             isRefreshing={isRefreshing}
           />
           <div className="mt-8 grid gap-4 md:grid-cols-2">
@@ -910,7 +1076,7 @@ export default function Home() {
           mode={backendMode}
           mealChoice={mealChoice}
           person={session.person}
-          onRefresh={() => loadData()}
+          onRefresh={() => loadData(accessCode, false)}
           isRefreshing={isRefreshing}
           action={
             <button className="ghost-button" onClick={logout}>
@@ -932,6 +1098,9 @@ export default function Home() {
             supplyIds={selectedSupplyIds}
             unfinishedOrders={unfinishedOrders}
             finishedOrders={finishedOrders}
+            customRequests={currentCustomRequests}
+            messages={conversationMessages}
+            chatText={chatText}
             dishName={dishName}
             categoryText={categoryText}
             dishPreview={dishPreview}
@@ -952,6 +1121,8 @@ export default function Home() {
             onCancelEdit={() => setEditDish(null)}
             onUpdateOrderStatus={updateOrderStatus}
             onClearHistory={() => clearFinishedHistory("chef")}
+            onChatTextChange={setChatText}
+            onSendMessage={sendMessage}
           />
         ) : (
           <CustomerDashboard
@@ -965,6 +1136,10 @@ export default function Home() {
             cart={cart}
             currentOrders={currentOrders}
             finishedOrders={finishedOrders}
+            customRequests={currentCustomRequests}
+            messages={conversationMessages}
+            chatText={chatText}
+            customRequestForm={customRequestForm}
             isSubmittingOrder={isSubmittingOrder}
             onMealChoiceChange={setMealChoice}
             onActivePathChange={setActivePath}
@@ -973,6 +1148,10 @@ export default function Home() {
             onSubmitOrders={submitOrders}
             onRateOrder={rateOrder}
             onClearHistory={() => clearFinishedHistory("mine")}
+            onChatTextChange={setChatText}
+            onSendMessage={sendMessage}
+            onCustomRequestChange={setCustomRequestForm}
+            onSubmitCustomRequest={submitCustomRequest}
           />
         )}
       </section>
@@ -1033,6 +1212,39 @@ function TopBar({
         {action}
       </div>
     </header>
+  );
+}
+
+function CollapsiblePanel({
+  kicker,
+  title,
+  count,
+  icon,
+  defaultOpen = false,
+  children
+}: {
+  kicker: string;
+  title: string;
+  count?: string;
+  icon?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="glass-panel collapsible-panel" open={defaultOpen}>
+      <summary className="collapsible-summary">
+        <span className="min-w-0">
+          <span className="section-kicker">{kicker}</span>
+          <span className="mt-1 block truncate text-xl font-black text-slate-950">{title}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          {count ? <span className="mini-badge">{count}</span> : null}
+          {icon}
+          <ChevronDown className="collapsible-arrow" size={18} />
+        </span>
+      </summary>
+      <div className="collapsible-body">{children}</div>
+    </details>
   );
 }
 
@@ -1233,6 +1445,9 @@ function ChefDashboard(props: {
   supplyIds: Set<string>;
   unfinishedOrders: Order[];
   finishedOrders: Order[];
+  customRequests: CustomDishRequest[];
+  messages: ChatMessage[];
+  chatText: string;
   dishName: string;
   categoryText: string;
   dishPreview: string;
@@ -1253,20 +1468,52 @@ function ChefDashboard(props: {
   onCancelEdit: () => void;
   onUpdateOrderStatus: (order: Order, status: OrderStatus) => void;
   onClearHistory: () => void;
+  onChatTextChange: (value: string) => void;
+  onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const filteredActiveDishes = props.activeDishes.filter(
     (dish) => dishMatchesPath(dish, props.activePath)
   );
 
   return (
-    <div className="mt-5 grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
+    <div className="mt-5 grid gap-5 xl:grid-cols-[0.9fr_1fr_0.8fr]">
       <section className="space-y-5">
         <MealSelector value={props.mealChoice} onChange={props.onMealChoiceChange} />
+
+        <section className="glass-panel p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="section-kicker">Serving now</p>
+              <h2 className="section-title">{props.mealChoice.period}供应菜品</h2>
+            </div>
+            <span className="mini-badge">{props.supplyIds.size} 道</span>
+          </div>
+          <div className="grid gap-3">
+            {filteredActiveDishes.length === 0 ? (
+              <EmptyState text="历史菜品库还没有可供应菜品。" />
+            ) : (
+              filteredActiveDishes.map((dish) => (
+                <DishRow
+                  key={dish.id}
+                  dish={dish}
+                  supplySelected={props.supplyIds.has(dish.id)}
+                  onToggleSupply={() => props.onToggleSupply(dish)}
+                  onToggleActive={() => props.onToggleDishActive(dish)}
+                  onEdit={() => props.onStartEdit(dish)}
+                />
+              ))
+            )}
+          </div>
+        </section>
+
+        <CollapsiblePanel kicker="Dish archive" title="历史菜品筛选" count={props.chefTags.length ? `${props.chefTags.length} 类` : undefined}>
+          <CategoryNavigator categories={props.chefTags} activePath={props.activePath} onChange={props.onActivePathChange} />
+        </CollapsiblePanel>
 
         <form onSubmit={props.onSaveDish} className="glass-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="section-kicker">Dish archive</p>
+              <p className="section-kicker">Add dish</p>
               <h2 className="section-title">新增历史菜品</h2>
             </div>
             <Store className="text-pink-500" size={25} />
@@ -1335,48 +1582,7 @@ function ChefDashboard(props: {
           </form>
         ) : null}
 
-        <section className="glass-panel p-5">
-          <div className="mb-4">
-            <p className="section-kicker">Tags</p>
-            <h2 className="section-title">历史菜品筛选</h2>
-          </div>
-          <CategoryNavigator categories={props.chefTags} activePath={props.activePath} onChange={props.onActivePathChange} />
-        </section>
-
-        <section className="glass-panel p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <p className="section-kicker">Serving now</p>
-              <h2 className="section-title">{props.mealChoice.period}供应菜品</h2>
-            </div>
-            <span className="mini-badge">{props.supplyIds.size} 道</span>
-          </div>
-          <div className="grid gap-3">
-            {filteredActiveDishes.length === 0 ? (
-              <EmptyState text="历史菜品库还没有可供应菜品。" />
-            ) : (
-              filteredActiveDishes.map((dish) => (
-                <DishRow
-                  key={dish.id}
-                  dish={dish}
-                  supplySelected={props.supplyIds.has(dish.id)}
-                  onToggleSupply={() => props.onToggleSupply(dish)}
-                  onToggleActive={() => props.onToggleDishActive(dish)}
-                  onEdit={() => props.onStartEdit(dish)}
-                />
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="glass-panel p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <p className="section-kicker">Paused archive</p>
-              <h2 className="section-title">停用菜品</h2>
-            </div>
-            <span className="mini-badge">{props.inactiveDishes.length} 道</span>
-          </div>
+        <CollapsiblePanel kicker="Paused archive" title="停用菜品" count={`${props.inactiveDishes.length} 道`}>
           <div className="grid gap-3">
             {props.inactiveDishes.length === 0 ? (
               <EmptyState text="停用后的历史菜品会在这里，可恢复或删除。" />
@@ -1391,7 +1597,7 @@ function ChefDashboard(props: {
               ))
             )}
           </div>
-        </section>
+        </CollapsiblePanel>
       </section>
 
       <OrderPanels
@@ -1403,6 +1609,17 @@ function ChefDashboard(props: {
         onUpdateOrderStatus={props.onUpdateOrderStatus}
         onClearHistory={props.onClearHistory}
       />
+      <section className="space-y-5">
+        <CustomRequestInbox requests={props.customRequests} />
+        <ChatPanel
+          person={props.person}
+          partner={otherPerson(props.person)}
+          messages={props.messages}
+          value={props.chatText}
+          onChange={props.onChatTextChange}
+          onSubmit={props.onSendMessage}
+        />
+      </section>
     </div>
   );
 }
@@ -1418,14 +1635,22 @@ function CustomerDashboard(props: {
   cart: CartItem[];
   currentOrders: Order[];
   finishedOrders: Order[];
+  customRequests: CustomDishRequest[];
+  messages: ChatMessage[];
+  chatText: string;
+  customRequestForm: CustomRequestForm;
   isSubmittingOrder: boolean;
   onMealChoiceChange: (value: MealChoice) => void;
   onActivePathChange: (value: string) => void;
   onAddToCart: (dish: Dish) => void;
   onUpdateCart: (dishId: string, patch: Partial<CartItem>) => void;
   onSubmitOrders: () => void;
-  onRateOrder: (order: Order, rating: number) => void;
+  onRateOrder: (order: Order, rating: number, reviewText?: string) => void;
   onClearHistory: () => void;
+  onChatTextChange: (value: string) => void;
+  onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onCustomRequestChange: (value: CustomRequestForm) => void;
+  onSubmitCustomRequest: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const unfinished = props.currentOrders.filter((order) => order.status === "未完成");
   const currentFinished = props.currentOrders.filter((order) => order.status !== "未完成");
@@ -1475,6 +1700,24 @@ function CustomerDashboard(props: {
           </button>
         </section>
 
+        <CustomDishRequestPanel
+          chef={props.chef}
+          mealChoice={props.mealChoice}
+          form={props.customRequestForm}
+          requests={props.customRequests}
+          onChange={props.onCustomRequestChange}
+          onSubmit={props.onSubmitCustomRequest}
+        />
+
+        <ChatPanel
+          person={props.person}
+          partner={props.chef}
+          messages={props.messages}
+          value={props.chatText}
+          onChange={props.onChatTextChange}
+          onSubmit={props.onSendMessage}
+        />
+
         <section className="glass-panel p-5">
           <div className="mb-4">
             <p className="section-kicker">Current period</p>
@@ -1485,24 +1728,24 @@ function CustomerDashboard(props: {
               <EmptyState text={`当前${props.mealChoice.period}还没有订单。`} />
             ) : (
               [...unfinished, ...currentFinished].map((order) => (
-                <OrderCard key={order.id} order={order} onRateOrder={(rating) => props.onRateOrder(order, rating)} />
+                <OrderCard key={order.id} order={order} onRateOrder={(rating, reviewText) => props.onRateOrder(order, rating, reviewText)} />
               ))
             )}
           </div>
         </section>
 
-        <section className="glass-panel p-5">
-          <HistoryHeader title="我的已结束历史" count={props.finishedOrders.length} onClearHistory={props.onClearHistory} />
+        <CollapsiblePanel kicker="History" title="我的已结束历史" count={`${props.finishedOrders.length} 条`}>
+          <HistoryActions count={props.finishedOrders.length} onClearHistory={props.onClearHistory} />
           <div className="grid gap-3">
             {props.finishedOrders.length === 0 ? (
               <EmptyState text="完成或拒绝后的历史会在这里。" />
             ) : (
               props.finishedOrders.map((order) => (
-                <OrderCard key={order.id} order={order} onRateOrder={(rating) => props.onRateOrder(order, rating)} />
+                <OrderCard key={order.id} order={order} onRateOrder={(rating, reviewText) => props.onRateOrder(order, rating, reviewText)} />
               ))
             )}
           </div>
-        </section>
+        </CollapsiblePanel>
       </aside>
     </div>
   );
@@ -1555,8 +1798,8 @@ function OrderPanels({
         </div>
       </section>
 
-      <section className="glass-panel p-5">
-        <HistoryHeader title="已结束订单" count={finishedOrders.length} onClearHistory={onClearHistory} />
+      <CollapsiblePanel kicker="History" title="已结束订单" count={`${finishedOrders.length} 条`}>
+        <HistoryActions count={finishedOrders.length} onClearHistory={onClearHistory} />
         <div className="grid gap-3">
           {finishedOrders.length === 0 ? (
             <EmptyState text="完成或拒绝的订单会进入这里。" />
@@ -1564,7 +1807,7 @@ function OrderPanels({
             finishedOrders.map((order) => <OrderCard key={order.id} order={order} showCustomer={showCustomer} />)
           )}
         </div>
-      </section>
+      </CollapsiblePanel>
     </section>
   );
 }
@@ -1575,7 +1818,7 @@ function DishCard({ dish, onAdd }: { dish: Dish; onAdd: () => void }) {
       <div className="relative aspect-[4/3] overflow-hidden rounded-[24px] bg-white">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={dish.image_url} alt={dish.name} className="h-full w-full object-cover" />
-        <div className="absolute left-3 top-3 rounded-full bg-white/85 px-3 py-1 text-xs font-bold text-cyan-700 backdrop-blur">
+        <div className="absolute left-3 top-3 rounded-full bg-white/80 px-3 py-1 text-xs font-bold text-pink-700 backdrop-blur">
           {dish.created_by}
         </div>
       </div>
@@ -1675,6 +1918,164 @@ function CartRow({ item, onUpdate }: { item: CartItem; onUpdate: (patch: Partial
   );
 }
 
+function CustomDishRequestPanel({
+  chef,
+  mealChoice,
+  form,
+  requests,
+  onChange,
+  onSubmit
+}: {
+  chef: PersonName;
+  mealChoice: MealChoice;
+  form: CustomRequestForm;
+  requests: CustomDishRequest[];
+  onChange: (value: CustomRequestForm) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <CollapsiblePanel
+      kicker="Free order"
+      title="我想单点"
+      count={requests.length ? `${requests.length} 条` : undefined}
+      icon={<NotebookPen className="text-pink-500" size={22} />}
+    >
+      <form onSubmit={onSubmit} className="space-y-3">
+        <input
+          className="text-input"
+          value={form.dish_name}
+          onChange={(event) => onChange({ ...form, dish_name: event.target.value })}
+          placeholder="菜品名称：比如番茄炒蛋"
+        />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input
+            className="text-input"
+            value={form.method}
+            onChange={(event) => onChange({ ...form, method: event.target.value })}
+            placeholder="做法：清炒/少油/辣炒"
+          />
+          <input
+            className="text-input"
+            value={form.amount}
+            onChange={(event) => onChange({ ...form, amount: event.target.value })}
+            placeholder="用量：一人份/多一点"
+          />
+        </div>
+        <textarea
+          className="note-textarea"
+          value={form.note}
+          onChange={(event) => onChange({ ...form, note: event.target.value })}
+          placeholder="其他想法：不确定也可以只写一句“想吃热乎的”。"
+        />
+        <button className="primary-button w-full" type="submit">
+          <Send size={18} />
+          发给 {chef}
+        </button>
+      </form>
+      <div className="mt-4 grid gap-2">
+        {requests.length === 0 ? (
+          <EmptyState text={`${mealChoice.period}还没有自主点菜。`} />
+        ) : (
+          requests.map((request) => <CustomRequestCard key={request.id} request={request} />)
+        )}
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+function CustomRequestInbox({ requests }: { requests: CustomDishRequest[] }) {
+  return (
+    <CollapsiblePanel kicker="Wish list" title="顾客想吃" count={`${requests.length} 条`} icon={<NotebookPen className="text-pink-500" size={22} />}>
+      <div className="grid gap-3">
+        {requests.length === 0 ? (
+          <EmptyState text="顾客自主点的菜会出现在这里。" />
+        ) : (
+          requests.map((request) => <CustomRequestCard key={request.id} request={request} showCustomer />)
+        )}
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+function CustomRequestCard({ request, showCustomer = false }: { request: CustomDishRequest; showCustomer?: boolean }) {
+  const title = request.dish_name || request.method || request.note || "想吃点特别的";
+  return (
+    <article className="rounded-[22px] border border-white/75 bg-white/60 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="break-words font-black text-slate-950">{title}</h3>
+          <p className="mt-1 text-xs font-bold text-slate-500">
+            {formatTime(request.created_at)} / {request.meal_period}
+            {showCustomer ? ` / ${request.customer_name}` : ""}
+          </p>
+        </div>
+        <NotebookPen className="shrink-0 text-pink-500" size={18} />
+      </div>
+      <div className="mt-3 grid gap-1.5 text-sm font-semibold text-slate-600">
+        {request.dish_name ? <p>菜名：{request.dish_name}</p> : null}
+        {request.method ? <p>做法：{request.method}</p> : null}
+        {request.amount ? <p>用量：{request.amount}</p> : null}
+        {request.note ? <p className="text-pink-600">想法：{request.note}</p> : null}
+      </div>
+    </article>
+  );
+}
+
+function ChatPanel({
+  person,
+  partner,
+  messages,
+  value,
+  onChange,
+  onSubmit
+}: {
+  person: PersonName;
+  partner: PersonName;
+  messages: ChatMessage[];
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const recentMessages = messages.slice(-30);
+  return (
+    <CollapsiblePanel
+      kicker="Live chat"
+      title={`和 ${partner} 说一下`}
+      count={messages.length ? `${messages.length} 条` : undefined}
+      icon={<MessageCircle className="text-pink-500" size={22} />}
+    >
+      <div className="chat-window">
+        {recentMessages.length === 0 ? (
+          <p className="py-8 text-center text-sm font-semibold text-slate-500">还没有聊天，第一句话可以很短。</p>
+        ) : (
+          recentMessages.map((message) => {
+            const mine = message.sender_name === person;
+            return (
+              <div key={message.id} className={mine ? "chat-row-mine" : "chat-row"}>
+                <div className={mine ? "chat-bubble-mine" : "chat-bubble"}>
+                  <p>{message.body}</p>
+                  <span>{formatTime(message.created_at)}</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <form onSubmit={onSubmit} className="mt-3 flex gap-2">
+        <input
+          className="text-input min-w-0 flex-1"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="比如：这个少放点辣"
+        />
+        <button className="round-button h-12 w-12" type="submit" aria-label="发送聊天">
+          <Send size={18} />
+        </button>
+      </form>
+    </CollapsiblePanel>
+  );
+}
+
 function OrderCard({
   order,
   showCustomer,
@@ -1686,8 +2087,9 @@ function OrderCard({
   showCustomer?: boolean;
   chefMode?: boolean;
   onUpdateStatus?: (status: OrderStatus) => void;
-  onRateOrder?: (rating: number) => void;
+  onRateOrder?: (rating: number, reviewText?: string) => void;
 }) {
+  const [reviewText, setReviewText] = useState(order.review_text ?? "");
   const isRejected = order.status === "已拒绝";
   const canRate = order.status === "已完成" && !isRejected && Boolean(onRateOrder);
   return (
@@ -1707,6 +2109,7 @@ function OrderCard({
           <p className="mt-1 text-xs font-semibold text-slate-500">点单：{formatTime(order.created_at)} / {order.meal_period}</p>
           {order.note ? <p className="mt-1 text-sm text-pink-600">备注：{order.note}</p> : null}
           {order.rating ? <StarRating value={order.rating} readonly /> : null}
+          {order.review_text ? <p className="mt-2 rounded-2xl bg-pink-50/80 px-3 py-2 text-sm font-semibold text-pink-700">评语：{order.review_text}</p> : null}
         </div>
       </div>
       {chefMode && onUpdateStatus ? (
@@ -1721,7 +2124,20 @@ function OrderCard({
           </button>
         </div>
       ) : null}
-      {canRate ? <StarRating value={order.rating ?? 0} onRate={onRateOrder} /> : null}
+      {canRate ? (
+        <div className="mt-3 rounded-2xl border border-white/75 bg-white/45 p-3">
+          <textarea
+            className="note-textarea"
+            value={reviewText}
+            onChange={(event) => setReviewText(event.target.value)}
+            placeholder="评语可以不写，比如：今天这个太香了"
+          />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <StarRating value={order.rating ?? 0} onRate={(rating) => onRateOrder?.(rating, reviewText)} />
+            {order.rating ? <span className="text-xs font-bold text-slate-500">已评价，可重新点星更新</span> : null}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1738,20 +2154,13 @@ function StarRating({ value, readonly = false, onRate }: { value: number; readon
   );
 }
 
-function HistoryHeader({ title, count, onClearHistory }: { title: string; count: number; onClearHistory: () => void }) {
+function HistoryActions({ count, onClearHistory }: { count: number; onClearHistory: () => void }) {
   return (
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p className="section-kicker">History</p>
-        <h2 className="section-title">{title}</h2>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="mini-badge">{count} 条</span>
-        <button className="danger-button" disabled={count === 0} onClick={onClearHistory}>
-          <Trash2 size={15} />
-          清除
-        </button>
-      </div>
+    <div className="mb-3 flex justify-end">
+      <button className="danger-button" disabled={count === 0} onClick={onClearHistory}>
+        <Trash2 size={15} />
+        清除历史
+      </button>
     </div>
   );
 }
@@ -1788,9 +2197,10 @@ function StatusPill({ mode, text, inline = false }: { mode: BackendMode; text: s
 function AmbientDecor() {
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      <div className="absolute inset-0 bg-[linear-gradient(120deg,#fff7fb_0%,#f4fbff_42%,#fffdf2_100%)]" />
-      <div className="absolute inset-0 opacity-[0.35] [background-image:linear-gradient(rgba(56,189,248,.24)_1px,transparent_1px),linear-gradient(90deg,rgba(236,72,153,.18)_1px,transparent_1px)] [background-size:28px_28px]" />
-      <div className="scanner-line" />
+      <div className="absolute inset-0 bg-[#fffaf8]" />
+      <div className="absolute inset-0 bg-[url('/background-menu.jpg')] bg-cover bg-center opacity-75" />
+      <div className="absolute inset-0 bg-white/48" />
+      <div className="absolute inset-0 opacity-[0.18] [background-image:radial-gradient(rgba(244,114,182,.45)_1px,transparent_1px)] [background-size:18px_18px]" />
     </div>
   );
 }

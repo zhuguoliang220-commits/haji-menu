@@ -50,9 +50,31 @@ create table if not exists public.orders (
   completed_at timestamptz,
   rejected_at timestamptz,
   rating integer check (rating between 1 and 5),
+  review_text text,
   rated_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_name text not null check (sender_name in ('哈基工', '哈吉梁')),
+  receiver_name text not null check (receiver_name in ('哈基工', '哈吉梁')),
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.custom_dish_requests (
+  id uuid primary key default gen_random_uuid(),
+  customer_name text not null check (customer_name in ('哈基工', '哈吉梁')),
+  chef_name text not null check (chef_name in ('哈基工', '哈吉梁')),
+  dish_name text,
+  method text,
+  amount text,
+  note text,
+  meal_date date not null default ((now() at time zone 'Asia/Shanghai')::date),
+  meal_period text not null default '午饭' check (meal_period in ('早餐', '午饭', '晚饭', '夜宵')),
+  created_at timestamptz not null default now()
 );
 
 alter table public.dishes add column if not exists category_id uuid references public.dish_categories(id);
@@ -64,6 +86,7 @@ alter table public.orders add column if not exists meal_period text default '午
 alter table public.orders add column if not exists completed_at timestamptz;
 alter table public.orders add column if not exists rejected_at timestamptz;
 alter table public.orders add column if not exists rating integer check (rating between 1 and 5);
+alter table public.orders add column if not exists review_text text;
 alter table public.orders add column if not exists rated_at timestamptz;
 alter table public.orders add column if not exists chef_name text check (chef_name in ('哈基工', '哈吉梁'));
 
@@ -150,6 +173,9 @@ create index if not exists orders_created_at_idx on public.orders (created_at de
 create index if not exists orders_status_idx on public.orders (status);
 create index if not exists orders_meal_idx on public.orders (meal_date, meal_period, status);
 create index if not exists orders_chef_idx on public.orders (chef_name, meal_date, meal_period);
+create index if not exists chat_messages_pair_idx on public.chat_messages (sender_name, receiver_name, created_at desc);
+create index if not exists custom_dish_requests_chef_idx on public.custom_dish_requests (chef_name, meal_date, meal_period, created_at desc);
+create index if not exists custom_dish_requests_customer_idx on public.custom_dish_requests (customer_name, meal_date, meal_period, created_at desc);
 
 -- Create a public storage bucket named dish-images in Supabase Dashboard.
 -- The app writes through the server-side service role key, so table RLS can stay enabled

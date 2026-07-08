@@ -8,7 +8,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
   try {
     const { id } = await context.params;
-    const body = (await request.json()) as { status?: string; rating?: number };
+    const body = (await request.json()) as { status?: string; rating?: number; review_text?: string };
 
     if (
       body.status &&
@@ -21,7 +21,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return Response.json({ error: "评分必须是 1 到 5 星" }, { status: 400 });
     }
 
-    if (!body.status && body.rating === undefined) {
+    if (!body.status && body.rating === undefined && body.review_text === undefined) {
       return Response.json({ error: "缺少更新内容" }, { status: 400 });
     }
 
@@ -36,6 +36,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
     if (body.rating !== undefined) {
       patch.rating = body.rating;
+      patch.review_text = body.review_text?.trim() || null;
       patch.rated_at = now;
     }
 
