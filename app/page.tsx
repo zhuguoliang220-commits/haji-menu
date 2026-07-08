@@ -373,9 +373,10 @@ export default function Home() {
   const interactionUntilRef = useRef(0);
   const dataHashesRef = useRef<Record<string, string>>({});
 
-  const markInteraction = useCallback(() => {
-    interactionUntilRef.current = Date.now() + 1800;
+  const markInteraction = useCallback((duration = 1800) => {
+    interactionUntilRef.current = Date.now() + duration;
   }, []);
+  const markUserInteraction = useCallback(() => markInteraction(), [markInteraction]);
 
   const isBusyInteracting = useCallback(() => {
     if (Date.now() < interactionUntilRef.current) return true;
@@ -750,47 +751,55 @@ export default function Home() {
 
   async function toggleSupply(dish: Dish) {
     if (!session) return;
+    markInteraction(6000);
     const isSelected = selectedSupplyIds.has(dish.id);
     const nextIds = isSelected
       ? Array.from(selectedSupplyIds).filter((id) => id !== dish.id)
       : [...Array.from(selectedSupplyIds), dish.id];
-
-    if (backendMode === "local") {
-      const nextAvailability = [
-        ...availability.filter(
-          (item) =>
-            !(
-              item.chef_name === session.person &&
-              item.meal_date === mealChoice.date &&
-              item.meal_period === mealChoice.period
-            )
-        ),
-        ...nextIds.map((dishId) => ({
-          id: localId("availability"),
+    const previousAvailability = availability;
+    const nextAvailability = [
+      ...availability.filter(
+        (item) =>
+          !(
+            item.chef_name === session.person &&
+            item.meal_date === mealChoice.date &&
+            item.meal_period === mealChoice.period
+          )
+      ),
+      ...nextIds.map((dishId) => {
+        const existing = selectedAvailability.find((item) => item.dish_id === dishId);
+        return {
+          id: existing?.id ?? localId("availability"),
           chef_name: session.person,
           dish_id: dishId,
           meal_date: mealChoice.date,
           meal_period: mealChoice.period,
-          created_at: nowIso()
-        }))
-      ];
-      setAvailability(nextAvailability);
+          created_at: existing?.created_at ?? nowIso()
+        };
+      })
+    ];
+    setAvailability(nextAvailability);
+    setNotice(isSelected ? `${dish.name} 已移出${mealChoice.period}供应` : `${dish.name} 已加入${mealChoice.period}供应`);
+
+    if (backendMode === "local") {
       writeLocal(localAvailabilityKey, nextAvailability);
-      setNotice(`${mealChoice.period}供应菜单已更新`);
       return;
     }
 
-    await apiFetch<{ availability: DishAvailability[] }>("/api/availability", accessCode, {
-      method: "PUT",
-      body: JSON.stringify({
-        chef_name: session.person,
-        meal_date: mealChoice.date,
-        meal_period: mealChoice.period,
-        dish_ids: nextIds
-      })
-    });
-    await loadData();
-    setNotice(`${mealChoice.period}供应菜单已更新`);
+    try {
+      await apiFetch<{ availability: DishAvailability[] }>("/api/availability", accessCode, {
+        method: "PUT",
+        body: JSON.stringify({
+          chef_name: session.person,
+          meal_date: mealChoice.date,
+          meal_period: mealChoice.period,
+          dish_ids: nextIds
+        })
+      });
+    } catch (error) {
+      setAvailability(previousAvailability);
+      setNotice(error instanceof Error ? error.message : "供应菜单同步失败");
+    }
   }
 
   function addToCart(dish: Dish) {
@@ -864,47 +873,65 @@ export default function Home() {
 
   async function updateOrderStatus(order: Order, status: OrderStatus) {
     const timestamp = nowIso();
+    markInteraction(6000);
+    const previousOrders = orders;
+    const nextOrders = orders.map((item) =>
+      item.id === order.id
+        ? {
+            ...item,
+            status,
+            completed_at: status === "已完成" ? timestamp : item.completed_at,
+            rejected_at: status === "已拒绝" ? timestamp : item.rejected_at,
+            updated_at: timestamp
+          }
+        : item
+    );
+    setOrders(nextOrders);
+    setNotice(status === "已完成" ? "订单已完成" : "订单已拒绝");
+
     if (backendMode === "local") {
-      const nextOrders = orders.map((item) =>
-        item.id === order.id
-          ? {
-              ...item,
-              status,
-              completed_at: status === "已完成" ? timestamp : item.completed_at,
-              rejected_at: status === "已拒绝" ? timestamp : item.rejected_at,
-              updated_at: timestamp
-            }
-          : item
-      );
-      setOrders(nextOrders);
       writeLocal(localOrdersKey, nextOrders);
       return;
     }
-    await apiFetch<{ order: Order }>(`/api/orders/${order.id}`, accessCode, {
-      method: "PATCH",
-      body: JSON.stringify({ status })
-    });
-    await loadData();
+
+    try {
+      await apiFetch<{ order: Order }>(`/api/orders/${order.id}`, accessCode, {
+        method: "PATCH",
+        body: JSON.stringify({ status })
+      });
+    } catch (error) {
+      setOrders(previousOrders);
+      setNotice(error instanceof Error ? error.message : "订单状态同步失败");
+    }
   }
 
   async function rateOrder(order: Order, rating: number, reviewText = "") {
     if (order.status !== "已完成") return;
     const timestamp = nowIso();
+    markInteraction(6000);
+    const previousOrders = orders;
+    const nextOrders = orders.map((item) =>
+      item.id === order.id
+        ? { ...item, rating, review_text: reviewText.trim() || null, rated_at: timestamp, updated_at: timestamp }
+        : item
+    );
+    setOrders(nextOrders);
+    setNotice(`已评价 ${rating} 星`);
+
     if (backendMode === "local") {
-      const nextOrders = orders.map((item) =>
-        item.id === order.id
-          ? { ...item, rating, review_text: reviewText.trim() || null, rated_at: timestamp, updated_at: timestamp }
-          : item
-      );
-      setOrders(nextOrders);
       writeLocal(localOrdersKey, nextOrders);
       return;
     }
-    await apiFetch<{ order: Order }>(`/api/orders/${order.id}`, accessCode, {
-      method: "PATCH",
-      body: JSON.stringify({ rating, review_text: reviewText })
-    });
-    await loadData();
+
+    try {
+      await apiFetch<{ order: Order }>(`/api/orders/${order.id}`, accessCode, {
+        method: "PATCH",
+        body: JSON.stringify({ rating, review_text: reviewText })
+      });
+    } catch (error) {
+      setOrders(previousOrders);
+      setNotice(error instanceof Error ? error.message : "评价同步失败");
+    }
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -1013,7 +1040,7 @@ export default function Home() {
 
   if (!accessGranted) {
     return (
-      <main className="min-h-screen overflow-hidden px-5 py-8 text-slate-900" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
+      <main className="min-h-screen overflow-hidden px-5 py-8 text-slate-900" onFocusCapture={markUserInteraction} onPointerDownCapture={markUserInteraction}>
         <AmbientDecor />
         <section className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-md flex-col justify-center">
           <div className="mb-7 flex items-center justify-center gap-3">
@@ -1048,7 +1075,7 @@ export default function Home() {
 
   if (!session) {
     return (
-      <main className="min-h-screen px-5 py-7 text-slate-900" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
+      <main className="min-h-screen px-5 py-7 text-slate-900" onFocusCapture={markUserInteraction} onPointerDownCapture={markUserInteraction}>
         <AmbientDecor />
         <section className="mx-auto w-full max-w-5xl">
           <TopBar
@@ -1089,7 +1116,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen px-4 py-5 text-slate-900 sm:px-6 lg:px-8" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
+    <main className="min-h-screen px-4 py-5 text-slate-900 sm:px-6 lg:px-8" onFocusCapture={markUserInteraction} onPointerDownCapture={markUserInteraction}>
       <AmbientDecor />
       <section className="mx-auto w-full max-w-7xl">
         <TopBar
