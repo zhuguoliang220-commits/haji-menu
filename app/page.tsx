@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bell,
   Camera,
@@ -192,6 +192,10 @@ function writeLocal<T>(key: string, value: T) {
   window.dispatchEvent(new Event("haji-local-sync"));
 }
 
+function isTextEditingElement(element: Element | null) {
+  return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement;
+}
+
 function normalizeCategory(category: Partial<DishCategory> & { id: string; name: string; created_by: PersonName; created_at: string }): DishCategory {
   return {
     id: category.id,
@@ -366,6 +370,25 @@ export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [mealChoice, setMealChoice] = useState<MealChoice>(getDefaultMealChoice);
   const [activePath, setActivePath] = useState("all");
+  const interactionUntilRef = useRef(0);
+  const dataHashesRef = useRef<Record<string, string>>({});
+
+  const markInteraction = useCallback(() => {
+    interactionUntilRef.current = Date.now() + 1800;
+  }, []);
+
+  const isBusyInteracting = useCallback(() => {
+    if (Date.now() < interactionUntilRef.current) return true;
+    if (typeof document === "undefined") return false;
+    return isTextEditingElement(document.activeElement);
+  }, []);
+
+  const setIfChanged = useCallback(<T,>(key: string, value: T, setter: (next: T) => void) => {
+    const hash = JSON.stringify(value);
+    if (dataHashesRef.current[key] === hash) return;
+    dataHashesRef.current[key] = hash;
+    setter(value);
+  }, []);
 
   const isChef = session?.role === "chef";
   const selectedChef = session ? (isChef ? session.person : otherPerson(session.person)) : null;
@@ -455,8 +478,9 @@ export default function Home() {
   );
 
   const loadData = useCallback(
-    async (code = accessCode, silent = true) => {
+    async (code = accessCode, silent = true, respectInteraction = false) => {
       if (!code) return;
+      if (respectInteraction && silent && isBusyInteracting()) return;
       if (!silent) setIsRefreshing(true);
       try {
         const [categoryResult, dishResult, orderResult, availabilityResult] = await Promise.all([
@@ -469,27 +493,27 @@ export default function Home() {
           apiFetch<{ messages: ChatMessage[] }>("/api/messages", code).catch(() => ({ messages: [] })),
           apiFetch<{ requests: CustomDishRequest[] }>("/api/custom-requests", code).catch(() => ({ requests: [] }))
         ]);
-        setCategories(categoryResult.categories.map(normalizeCategory));
-        setDishes(dishResult.dishes.map(normalizeDish));
-        setOrders(orderResult.orders.map(normalizeOrder));
-        setAvailability(availabilityResult.availability.map(normalizeAvailability));
-        setMessages(messageResult.messages.map(normalizeMessage));
-        setCustomRequests(customRequestResult.requests.map(normalizeCustomRequest));
+        setIfChanged("categories", categoryResult.categories.map(normalizeCategory), setCategories);
+        setIfChanged("dishes", dishResult.dishes.map(normalizeDish), setDishes);
+        setIfChanged("orders", orderResult.orders.map(normalizeOrder), setOrders);
+        setIfChanged("availability", availabilityResult.availability.map(normalizeAvailability), setAvailability);
+        setIfChanged("messages", messageResult.messages.map(normalizeMessage), setMessages);
+        setIfChanged("customRequests", customRequestResult.requests.map(normalizeCustomRequest), setCustomRequests);
         setBackendMode("supabase");
       } catch {
         const localCategories = readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory);
         setBackendMode("local");
-        setCategories(localCategories);
-        setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
-        setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
-        setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
-        setMessages(readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage));
-        setCustomRequests(readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest));
+        setIfChanged("categories", localCategories, setCategories);
+        setIfChanged("dishes", readLocal<Dish[]>(localDishesKey, []).map(normalizeDish), setDishes);
+        setIfChanged("orders", readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder), setOrders);
+        setIfChanged("availability", readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability), setAvailability);
+        setIfChanged("messages", readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage), setMessages);
+        setIfChanged("customRequests", readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest), setCustomRequests);
       } finally {
         if (!silent) setIsRefreshing(false);
       }
     },
-    [accessCode]
+    [accessCode, isBusyInteracting, setIfChanged]
   );
 
   useEffect(() => {
@@ -505,15 +529,15 @@ export default function Home() {
 
   useEffect(() => {
     if (!accessGranted || !accessCode) return;
-    const interval = window.setInterval(() => void loadData(accessCode), 8000);
+    const interval = window.setInterval(() => void loadData(accessCode, true, true), 15000);
     const syncLocal = () => {
       if (backendMode === "local") {
-        setCategories(readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory));
-        setDishes(readLocal<Dish[]>(localDishesKey, []).map(normalizeDish));
-        setOrders(readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder));
-        setAvailability(readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability));
-        setMessages(readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage));
-        setCustomRequests(readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest));
+        setIfChanged("categories", readLocal<DishCategory[]>(localCategoriesKey, []).map(normalizeCategory), setCategories);
+        setIfChanged("dishes", readLocal<Dish[]>(localDishesKey, []).map(normalizeDish), setDishes);
+        setIfChanged("orders", readLocal<Order[]>(localOrdersKey, []).map(normalizeOrder), setOrders);
+        setIfChanged("availability", readLocal<DishAvailability[]>(localAvailabilityKey, []).map(normalizeAvailability), setAvailability);
+        setIfChanged("messages", readLocal<ChatMessage[]>(localMessagesKey, []).map(normalizeMessage), setMessages);
+        setIfChanged("customRequests", readLocal<CustomDishRequest[]>(localCustomRequestsKey, []).map(normalizeCustomRequest), setCustomRequests);
       }
     };
     window.addEventListener("haji-local-sync", syncLocal);
@@ -521,7 +545,7 @@ export default function Home() {
       window.clearInterval(interval);
       window.removeEventListener("haji-local-sync", syncLocal);
     };
-  }, [accessCode, accessGranted, backendMode, loadData]);
+  }, [accessCode, accessGranted, backendMode, loadData, setIfChanged]);
 
   useEffect(() => {
     if (!dishFile) {
@@ -989,7 +1013,7 @@ export default function Home() {
 
   if (!accessGranted) {
     return (
-      <main className="min-h-screen overflow-hidden px-5 py-8 text-slate-900">
+      <main className="min-h-screen overflow-hidden px-5 py-8 text-slate-900" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
         <AmbientDecor />
         <section className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-md flex-col justify-center">
           <div className="mb-7 flex items-center justify-center gap-3">
@@ -1008,7 +1032,6 @@ export default function Home() {
                 className="text-input"
                 value={accessCode}
                 onChange={(event) => setAccessCode(event.target.value)}
-                placeholder="输入情侣访问码"
                 type="password"
               />
               <button className="primary-button w-full" type="submit">
@@ -1025,7 +1048,7 @@ export default function Home() {
 
   if (!session) {
     return (
-      <main className="min-h-screen px-5 py-7 text-slate-900">
+      <main className="min-h-screen px-5 py-7 text-slate-900" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
         <AmbientDecor />
         <section className="mx-auto w-full max-w-5xl">
           <TopBar
@@ -1066,7 +1089,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen px-4 py-5 text-slate-900 sm:px-6 lg:px-8">
+    <main className="min-h-screen px-4 py-5 text-slate-900 sm:px-6 lg:px-8" onFocusCapture={markInteraction} onPointerDownCapture={markInteraction}>
       <AmbientDecor />
       <section className="mx-auto w-full max-w-7xl">
         <TopBar
@@ -1375,9 +1398,9 @@ function CategoryPathBuilder({
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-3">
-        <CategoryCombo id="category-level-1" label="一级目录" value={level1} options={level1Options} placeholder="如：素菜" onChange={(next) => { setLevel1(next); setLevel2(""); setLevel3(""); }} />
-        <CategoryCombo id="category-level-2" label="二级目录" value={level2} options={level2Options} placeholder="如：青菜" onChange={(next) => { setLevel2(next); setLevel3(""); }} />
-        <CategoryCombo id="category-level-3" label="三级目录" value={level3} options={level3Options} placeholder="如：清炒" onChange={setLevel3} />
+        <CategoryCombo id="category-level-1" label="一级目录" value={level1} options={level1Options} onChange={(next) => { setLevel1(next); setLevel2(""); setLevel3(""); }} />
+        <CategoryCombo id="category-level-2" label="二级目录" value={level2} options={level2Options} onChange={(next) => { setLevel2(next); setLevel3(""); }} />
+        <CategoryCombo id="category-level-3" label="三级目录" value={level3} options={level3Options} onChange={setLevel3} />
       </div>
       <button type="button" className="ghost-button w-full" onClick={addPath}>
         <Plus size={16} />
@@ -1404,14 +1427,12 @@ function CategoryCombo({
   label,
   value,
   options,
-  placeholder,
   onChange
 }: {
   id: string;
   label: string;
   value: string;
   options: string[];
-  placeholder: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1423,7 +1444,6 @@ function CategoryCombo({
         list={`${id}-list`}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
       />
       <datalist id={`${id}-list`}>
         {options.map((option) => (
@@ -1480,6 +1500,10 @@ function ChefDashboard(props: {
       <section className="space-y-5">
         <MealSelector value={props.mealChoice} onChange={props.onMealChoiceChange} />
 
+        <CollapsiblePanel kicker="Dish archive" title="历史菜品筛选" count={props.chefTags.length ? `${props.chefTags.length} 类` : undefined}>
+          <CategoryNavigator categories={props.chefTags} activePath={props.activePath} onChange={props.onActivePathChange} />
+        </CollapsiblePanel>
+
         <section className="glass-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -1506,10 +1530,6 @@ function ChefDashboard(props: {
           </div>
         </section>
 
-        <CollapsiblePanel kicker="Dish archive" title="历史菜品筛选" count={props.chefTags.length ? `${props.chefTags.length} 类` : undefined}>
-          <CategoryNavigator categories={props.chefTags} activePath={props.activePath} onChange={props.onActivePathChange} />
-        </CollapsiblePanel>
-
         <form onSubmit={props.onSaveDish} className="glass-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -1521,7 +1541,7 @@ function ChefDashboard(props: {
           <div className="grid gap-4">
             <div>
               <label className="field-label" htmlFor="dish-name">菜品名称</label>
-              <input id="dish-name" className="text-input" value={props.dishName} onChange={(event) => props.onDishNameChange(event.target.value)} placeholder="比如：清蒸鸡腿" />
+              <input id="dish-name" className="text-input" value={props.dishName} onChange={(event) => props.onDishNameChange(event.target.value)} />
             </div>
             <div>
               <p className="field-label">所属分类</p>
@@ -1913,7 +1933,7 @@ function CartRow({ item, onUpdate }: { item: CartItem; onUpdate: (patch: Partial
           </div>
         </div>
       </div>
-      <input className="note-input mt-3" value={item.note} onChange={(event) => onUpdate({ note: event.target.value })} placeholder="备注：少糖/多辣/要爱心摆盘" />
+      <input className="note-input mt-3" value={item.note} onChange={(event) => onUpdate({ note: event.target.value })} />
     </article>
   );
 }
@@ -1945,27 +1965,23 @@ function CustomDishRequestPanel({
           className="text-input"
           value={form.dish_name}
           onChange={(event) => onChange({ ...form, dish_name: event.target.value })}
-          placeholder="菜品名称：比如番茄炒蛋"
         />
         <div className="grid gap-3 sm:grid-cols-2">
           <input
             className="text-input"
             value={form.method}
             onChange={(event) => onChange({ ...form, method: event.target.value })}
-            placeholder="做法：清炒/少油/辣炒"
           />
           <input
             className="text-input"
             value={form.amount}
             onChange={(event) => onChange({ ...form, amount: event.target.value })}
-            placeholder="用量：一人份/多一点"
           />
         </div>
         <textarea
           className="note-textarea"
           value={form.note}
           onChange={(event) => onChange({ ...form, note: event.target.value })}
-          placeholder="其他想法：不确定也可以只写一句“想吃热乎的”。"
         />
         <button className="primary-button w-full" type="submit">
           <Send size={18} />
@@ -2066,7 +2082,6 @@ function ChatPanel({
           className="text-input min-w-0 flex-1"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="比如：这个少放点辣"
         />
         <button className="round-button h-12 w-12" type="submit" aria-label="发送聊天">
           <Send size={18} />
@@ -2130,7 +2145,6 @@ function OrderCard({
             className="note-textarea"
             value={reviewText}
             onChange={(event) => setReviewText(event.target.value)}
-            placeholder="评语可以不写，比如：今天这个太香了"
           />
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <StarRating value={order.rating ?? 0} onRate={(rating) => onRateOrder?.(rating, reviewText)} />
