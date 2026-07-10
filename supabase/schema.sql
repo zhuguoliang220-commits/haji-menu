@@ -102,6 +102,23 @@ alter table public.orders add column if not exists chef_name text check (chef_na
 alter table public.chat_messages add column if not exists read_at timestamptz;
 alter table public.chef_star_earnings drop constraint if exists chef_star_earnings_order_id_fkey;
 
+insert into public.chef_star_earnings (order_id, chef_name, stars, earned_on, updated_at)
+select
+  id,
+  chef_name,
+  rating,
+  coalesce((rated_at at time zone 'Asia/Shanghai')::date, (created_at at time zone 'Asia/Shanghai')::date),
+  now()
+from public.orders
+where status = '已完成'
+  and rating is not null
+  and chef_name is not null
+on conflict (order_id) do update
+set chef_name = excluded.chef_name,
+    stars = excluded.stars,
+    earned_on = excluded.earned_on,
+    updated_at = excluded.updated_at;
+
 alter table public.orders alter column meal_date set not null;
 alter table public.orders alter column meal_period set not null;
 
