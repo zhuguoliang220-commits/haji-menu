@@ -25,6 +25,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return Response.json({ error: "缺少更新内容" }, { status: 400 });
     }
 
+    if (body.rating !== undefined) {
+      const { data: existing, error: existingError } = await getSupabaseAdmin()
+        .from("orders")
+        .select("status, chef_name")
+        .eq("id", id)
+        .single();
+      if (existingError) throw existingError;
+      if (existing.status !== "已完成" || !existing.chef_name) {
+        return Response.json({ error: "只能评价已完成的订单" }, { status: 400 });
+      }
+    }
+
     const now = new Date().toISOString();
     const patch: Record<string, string | number | null> = { updated_at: now };
 
@@ -49,6 +61,21 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       .single();
 
     if (error) throw error;
+
+    if (body.rating !== undefined && data.chef_name) {
+      const earnedOn = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+      const { error: starsError } = await supabase.from("chef_star_earnings").upsert(
+        {
+          order_id: data.id,
+          chef_name: data.chef_name,
+          stars: body.rating,
+          earned_on: earnedOn,
+          updated_at: now
+        },
+        { onConflict: "order_id" }
+      );
+      if (starsError) throw starsError;
+    }
     return Response.json({ order: data });
   } catch (error) {
     if (error instanceof Error && error.message.includes("Missing SUPABASE")) return missingSupabase();

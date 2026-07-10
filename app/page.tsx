@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   ChatMessage,
+  ChefStarStats,
   CustomDishRequest,
   Dish,
   DishAvailability,
@@ -72,6 +73,13 @@ type CustomRequestForm = {
   note: string;
 };
 
+type StarEarning = {
+  order_id: string;
+  chef_name: PersonName;
+  stars: number;
+  earned_on: string;
+};
+
 const sessionKey = "haji-menu-session";
 const accessKey = "haji-menu-access";
 const localDishesKey = "haji-menu-local-dishes";
@@ -79,6 +87,7 @@ const localOrdersKey = "haji-menu-local-orders";
 const localCategoriesKey = "haji-menu-local-categories";
 const localAvailabilityKey = "haji-menu-local-availability";
 const localMessagesKey = "haji-menu-local-messages";
+const localStarEarningsKey = "haji-menu-local-star-earnings";
 const localCustomRequestsKey = "haji-menu-local-custom-requests";
 const configuredAccessCode = process.env.NEXT_PUBLIC_APP_ACCESS_CODE || "haji-love";
 
@@ -272,7 +281,8 @@ function normalizeMessage(item: Partial<ChatMessage> & { id: string; sender_name
     sender_name: item.sender_name,
     receiver_name: item.receiver_name,
     body: item.body,
-    created_at: item.created_at
+    created_at: item.created_at,
+    read_at: item.read_at ?? null
   };
 }
 
@@ -349,6 +359,7 @@ export default function Home() {
   const [availability, setAvailability] = useState<DishAvailability[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chefStarStats, setChefStarStats] = useState<ChefStarStats | null>(null);
   const [customRequests, setCustomRequests] = useState<CustomDishRequest[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [chatText, setChatText] = useState("");
@@ -549,6 +560,28 @@ export default function Home() {
   }, [accessCode, accessGranted, backendMode, loadData, setIfChanged]);
 
   useEffect(() => {
+    if (!accessGranted || !accessCode || !session || session.role !== "chef") {
+      setChefStarStats(null);
+      return;
+    }
+
+    if (backendMode === "local") {
+      const today = formatDate();
+      const earnings = readLocal<StarEarning[]>(localStarEarningsKey, []).filter((item) => item.chef_name === session.person);
+      setChefStarStats({
+        chef_name: session.person,
+        today_stars: earnings.filter((item) => item.earned_on === today).reduce((sum, item) => sum + item.stars, 0),
+        total_stars: earnings.reduce((sum, item) => sum + item.stars, 0)
+      });
+      return;
+    }
+
+    void apiFetch<{ stats: ChefStarStats }>(`/api/chef-stars?chef=${encodeURIComponent(session.person)}`, accessCode)
+      .then((result) => setChefStarStats(result.stats))
+      .catch(() => setChefStarStats(null));
+  }, [accessCode, accessGranted, backendMode, session]);
+
+  useEffect(() => {
     if (!dishFile) {
       setDishPreview("");
       return;
@@ -583,6 +616,7 @@ export default function Home() {
     setCart([]);
     setActivePath("all");
     setNotice(`${choice.person} 已进入${choice.role === "chef" ? "厨师台" : "点餐台"}`);
+    void loadData();
   }
 
   function logout() {
@@ -919,7 +953,13 @@ export default function Home() {
     setNotice(`已评价 ${rating} 星`);
 
     if (backendMode === "local") {
+      const previousEarnings = readLocal<StarEarning[]>(localStarEarningsKey, []);
+      const nextEarnings = [
+        ...previousEarnings.filter((item) => item.order_id !== order.id),
+        { order_id: order.id, chef_name: order.chef_name ?? otherPerson(order.customer_name), stars: rating, earned_on: formatDate() }
+      ];
       writeLocal(localOrdersKey, nextOrders);
+      writeLocal(localStarEarningsKey, nextEarnings);
       return;
     }
 
@@ -931,6 +971,34 @@ export default function Home() {
     } catch (error) {
       setOrders(previousOrders);
       setNotice(error instanceof Error ? error.message : "评价同步失败");
+    }
+  }
+
+  async function markConversationRead() {
+    if (!session || !chatPartner) return;
+    const unread = messages.filter(
+      (message) => message.sender_name === chatPartner && message.receiver_name === session.person && !message.read_at
+    );
+    if (unread.length === 0) return;
+
+    const timestamp = nowIso();
+    const nextMessages = messages.map((message) =>
+      unread.some((item) => item.id === message.id) ? { ...message, read_at: timestamp } : message
+    );
+    setMessages(nextMessages);
+
+    if (backendMode === "local") {
+      writeLocal(localMessagesKey, nextMessages);
+      return;
+    }
+
+    try {
+      await apiFetch<{ ok: boolean }>("/api/messages", accessCode, {
+        method: "PATCH",
+        body: JSON.stringify({ reader_name: session.person, partner_name: chatPartner })
+      });
+    } catch {
+      setMessages(messages);
     }
   }
 
@@ -948,7 +1016,8 @@ export default function Home() {
           sender_name: session.person,
           receiver_name: chatPartner,
           body: text,
-          created_at: createdAt
+          created_at: createdAt,
+          read_at: null
         }
       ];
       setMessages(nextMessages);
@@ -957,16 +1026,32 @@ export default function Home() {
       return;
     }
 
-    await apiFetch<{ message: ChatMessage }>("/api/messages", accessCode, {
-      method: "POST",
-      body: JSON.stringify({
-        sender_name: session.person,
-        receiver_name: chatPartner,
-        body: text
-      })
-    });
+    const pendingId = localId("message");
+    const optimisticMessage: ChatMessage = {
+      id: pendingId,
+      sender_name: session.person,
+      receiver_name: chatPartner,
+      body: text,
+      created_at: createdAt,
+      read_at: null
+    };
+    setMessages((items) => [...items, optimisticMessage]);
     setChatText("");
-    await loadData();
+    try {
+      const result = await apiFetch<{ message: ChatMessage }>("/api/messages", accessCode, {
+        method: "POST",
+        body: JSON.stringify({
+          sender_name: session.person,
+          receiver_name: chatPartner,
+          body: text
+        })
+      });
+      setMessages((items) => items.map((item) => (item.id === pendingId ? normalizeMessage(result.message) : item)));
+    } catch (error) {
+      setMessages((items) => items.filter((item) => item.id !== pendingId));
+      setChatText(text);
+      setNotice(error instanceof Error ? error.message : "发送聊天失败");
+    }
   }
 
   async function submitCustomRequest(event: FormEvent<HTMLFormElement>) {
@@ -1148,6 +1233,7 @@ export default function Home() {
             supplyIds={selectedSupplyIds}
             unfinishedOrders={unfinishedOrders}
             finishedOrders={finishedOrders}
+            starStats={chefStarStats}
             customRequests={currentCustomRequests}
             messages={conversationMessages}
             chatText={chatText}
@@ -1173,6 +1259,7 @@ export default function Home() {
             onClearHistory={() => clearFinishedHistory("chef")}
             onChatTextChange={setChatText}
             onSendMessage={sendMessage}
+            onMarkMessagesRead={markConversationRead}
           />
         ) : (
           <CustomerDashboard
@@ -1200,6 +1287,7 @@ export default function Home() {
             onClearHistory={() => clearFinishedHistory("mine")}
             onChatTextChange={setChatText}
             onSendMessage={sendMessage}
+            onMarkMessagesRead={markConversationRead}
             onCustomRequestChange={setCustomRequestForm}
             onSubmitCustomRequest={submitCustomRequest}
           />
@@ -1271,6 +1359,7 @@ function CollapsiblePanel({
   count,
   icon,
   defaultOpen = false,
+  onToggle,
   children
 }: {
   kicker: string;
@@ -1278,10 +1367,11 @@ function CollapsiblePanel({
   count?: string;
   icon?: ReactNode;
   defaultOpen?: boolean;
+  onToggle?: (open: boolean) => void;
   children: ReactNode;
 }) {
   return (
-    <details className="glass-panel collapsible-panel" open={defaultOpen}>
+    <details className="glass-panel collapsible-panel" open={defaultOpen} onToggle={(event) => onToggle?.(event.currentTarget.open)}>
       <summary className="collapsible-summary">
         <span className="min-w-0">
           <span className="section-kicker">{kicker}</span>
@@ -1492,6 +1582,7 @@ function ChefDashboard(props: {
   supplyIds: Set<string>;
   unfinishedOrders: Order[];
   finishedOrders: Order[];
+  starStats: ChefStarStats | null;
   customRequests: CustomDishRequest[];
   messages: ChatMessage[];
   chatText: string;
@@ -1517,6 +1608,7 @@ function ChefDashboard(props: {
   onClearHistory: () => void;
   onChatTextChange: (value: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onMarkMessagesRead: () => void;
 }) {
   const filteredActiveDishes = props.activeDishes.filter(
     (dish) => dishMatchesPath(dish, props.activePath)
@@ -1657,6 +1749,7 @@ function ChefDashboard(props: {
         onClearHistory={props.onClearHistory}
       />
       <section className="space-y-5">
+        <ChefStarPanel stats={props.starStats} />
         <CustomRequestInbox requests={props.customRequests} />
         <ChatPanel
           person={props.person}
@@ -1665,6 +1758,7 @@ function ChefDashboard(props: {
           value={props.chatText}
           onChange={props.onChatTextChange}
           onSubmit={props.onSendMessage}
+          onMarkRead={props.onMarkMessagesRead}
         />
       </section>
     </div>
@@ -1696,6 +1790,7 @@ function CustomerDashboard(props: {
   onClearHistory: () => void;
   onChatTextChange: (value: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onMarkMessagesRead: () => void;
   onCustomRequestChange: (value: CustomRequestForm) => void;
   onSubmitCustomRequest: (event: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -1763,6 +1858,7 @@ function CustomerDashboard(props: {
           value={props.chatText}
           onChange={props.onChatTextChange}
           onSubmit={props.onSendMessage}
+          onMarkRead={props.onMarkMessagesRead}
         />
 
         <section className="glass-panel p-5">
@@ -2070,7 +2166,8 @@ function ChatPanel({
   messages,
   value,
   onChange,
-  onSubmit
+  onSubmit,
+  onMarkRead
 }: {
   person: PersonName;
   partner: PersonName;
@@ -2078,16 +2175,31 @@ function ChatPanel({
   value: string;
   onChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onMarkRead: () => void;
 }) {
   const recentMessages = messages.slice(-30);
+  const [isOpen, setIsOpen] = useState(false);
+  const chatWindowRef = useRef<HTMLDivElement>(null);
+  const unreadCount = messages.filter((message) => message.sender_name === partner && message.receiver_name === person && !message.read_at).length;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (chatWindowRef.current) chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
+    });
+    if (unreadCount > 0) onMarkRead();
+    return () => window.cancelAnimationFrame(frame);
+  }, [isOpen, messages, onMarkRead, unreadCount]);
+
   return (
     <CollapsiblePanel
       kicker="Live chat"
       title={`和 ${partner} 说一下`}
-      count={messages.length ? `${messages.length} 条` : undefined}
+      count={unreadCount ? `${unreadCount} 条未读` : messages.length ? `${messages.length} 条` : undefined}
       icon={<MessageCircle className="text-pink-500" size={22} />}
+      onToggle={setIsOpen}
     >
-      <div className="chat-window">
+      <div ref={chatWindowRef} className="chat-window">
         {recentMessages.length === 0 ? (
           <p className="py-8 text-center text-sm font-semibold text-slate-500">还没有聊天，第一句话可以很短。</p>
         ) : (
@@ -2115,6 +2227,28 @@ function ChatPanel({
         </button>
       </form>
     </CollapsiblePanel>
+  );
+}
+
+function ChefStarPanel({ stats }: { stats: ChefStarStats | null }) {
+  return (
+    <section className="star-summary-panel">
+      <div className="flex items-center gap-2 text-amber-500">
+        <Star size={20} fill="currentColor" />
+        <p className="section-kicker !text-amber-600">Chef stars</p>
+      </div>
+      <h2 className="mt-1 text-lg font-black text-slate-950">本次掌勺得星</h2>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="star-stat">
+          <span>今日所得</span>
+          <strong>{stats?.today_stars ?? 0}</strong>
+        </div>
+        <div className="star-stat">
+          <span>累计所得</span>
+          <strong>{stats?.total_stars ?? 0}</strong>
+        </div>
+      </div>
+    </section>
   );
 }
 

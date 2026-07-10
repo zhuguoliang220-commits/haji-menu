@@ -61,7 +61,17 @@ create table if not exists public.chat_messages (
   sender_name text not null check (sender_name in ('哈基工', '哈吉梁')),
   receiver_name text not null check (receiver_name in ('哈基工', '哈吉梁')),
   body text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+
+create table if not exists public.chef_star_earnings (
+  order_id uuid primary key,
+  chef_name text not null check (chef_name in ('哈基工', '哈吉梁')),
+  stars integer not null check (stars between 1 and 5),
+  earned_on date not null default ((now() at time zone 'Asia/Shanghai')::date),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.custom_dish_requests (
@@ -89,6 +99,8 @@ alter table public.orders add column if not exists rating integer check (rating 
 alter table public.orders add column if not exists review_text text;
 alter table public.orders add column if not exists rated_at timestamptz;
 alter table public.orders add column if not exists chef_name text check (chef_name in ('哈基工', '哈吉梁'));
+alter table public.chat_messages add column if not exists read_at timestamptz;
+alter table public.chef_star_earnings drop constraint if exists chef_star_earnings_order_id_fkey;
 
 alter table public.orders alter column meal_date set not null;
 alter table public.orders alter column meal_period set not null;
@@ -174,6 +186,8 @@ create index if not exists orders_status_idx on public.orders (status);
 create index if not exists orders_meal_idx on public.orders (meal_date, meal_period, status);
 create index if not exists orders_chef_idx on public.orders (chef_name, meal_date, meal_period);
 create index if not exists chat_messages_pair_idx on public.chat_messages (sender_name, receiver_name, created_at desc);
+create index if not exists chat_messages_unread_idx on public.chat_messages (receiver_name, sender_name, created_at desc) where read_at is null;
+create index if not exists chef_star_earnings_chef_idx on public.chef_star_earnings (chef_name, earned_on desc);
 create index if not exists custom_dish_requests_chef_idx on public.custom_dish_requests (chef_name, meal_date, meal_period, created_at desc);
 create index if not exists custom_dish_requests_customer_idx on public.custom_dish_requests (customer_name, meal_date, meal_period, created_at desc);
 

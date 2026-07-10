@@ -65,3 +65,28 @@ export async function POST(request: Request) {
     return Response.json({ error: "发送聊天失败" }, { status: 500 });
   }
 }
+
+export async function PATCH(request: Request) {
+  if (!isAuthorized(request)) return unauthorized();
+
+  try {
+    const body = (await request.json()) as { reader_name?: PersonName; partner_name?: PersonName };
+    if (!body.reader_name || !body.partner_name || !isPerson(body.reader_name) || !isPerson(body.partner_name)) {
+      return Response.json({ error: "已读对象不正确" }, { status: 400 });
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { error } = await supabase
+      .from("chat_messages")
+      .update({ read_at: new Date().toISOString() })
+      .eq("receiver_name", body.reader_name)
+      .eq("sender_name", body.partner_name)
+      .is("read_at", null);
+
+    if (error) throw error;
+    return Response.json({ ok: true });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Missing SUPABASE")) return missingSupabase();
+    return Response.json({ error: "更新已读状态失败" }, { status: 500 });
+  }
+}

@@ -94,6 +94,13 @@ export type ChatMessage = {
   receiver_name: PersonName;
   body: string;
   created_at: string;
+  read_at: string | null;
+};
+
+export type ChefStarStats = {
+  chef_name: PersonName;
+  today_stars: number;
+  total_stars: number;
 };
 
 export type CustomDishRequest = {

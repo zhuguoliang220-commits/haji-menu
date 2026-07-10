@@ -310,6 +310,23 @@ button {
     @apply max-h-80 min-h-48 space-y-2 overflow-y-auto rounded-[22px] border border-pink-100 bg-white/45 p-3;
   }
 
+  .star-summary-panel {
+    @apply border border-amber-100 bg-white/75 p-4 shadow-[0_12px_28px_rgba(212,157,39,0.12)];
+    border-radius: 18px;
+  }
+
+  .star-stat {
+    @apply rounded-2xl bg-amber-50 px-3 py-2 text-center text-amber-700;
+  }
+
+  .star-stat span {
+    @apply block text-[11px] font-black;
+  }
+
+  .star-stat strong {
+    @apply mt-0.5 block text-2xl font-black;
+  }
+
   .chat-row,
   .chat-row-mine {
     @apply flex;
